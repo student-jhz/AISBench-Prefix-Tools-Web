@@ -31,7 +31,7 @@ jobs:
           - { arch: amd64, runner: ubuntu-latest }
           - { arch: arm64, runner: ubuntu-24.04-arm }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
@@ -97,12 +97,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # 在 manylinux_2_28 (glibc 2.28) 容器内构建。注: manylinux2014 镜像
-          # 已冻结不再更新, 内部 pip 等组件过旧会导致 CI 打包失败。
+          # 在 manylinux_2_28 (glibc 2.28) 容器内构建, 产物可运行于
+          # RHEL 8+ / 麒麟V10 / openEuler / Ubuntu20.04+ 等 glibc >= 2.28
+          # 的主流发行版; 更老系统请使用 Docker 镜像离线包(自带 Python)。
           - { name: linux_amd64, runner: ubuntu-latest, manylinux: manylinux_2_28_x86_64 }
           - { name: linux_arm64, runner: ubuntu-24.04-arm, manylinux: manylinux_2_28_aarch64 }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
@@ -118,44 +119,68 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
+      - name: 拉取 manylinux 构建镜像
+        shell: bash
+        run: docker pull "quay.io/pypa/${{ matrix.manylinux }}" 2>&1 | tee pull.log
+
       - name: 在 manylinux_2_28 容器内 PyInstaller 打包
+        shell: bash
         run: |
-          # glibc 2.17 构建环境 => 产物可运行于任何 glibc >= 2.17 的 Linux
-          # (CentOS7 / RHEL8+ / 麒麟V10 / openEuler / Ubuntu20.04+)
-          # 注意: venv 与安装必须与打包在同一容器运行内完成(docker run 不保留状态)
-          #       manylinux2014 镜像已冻结且不再更新, 改用受支持的 manylinux_2_28
-          #       (glibc 2.28, 仍远低于 Ubuntu22.04 的 2.35, 兼容 RHEL9+/麒麟V10/
-          #        openEuler22+/Ubuntu20.04+; 更老系统请用 Docker 镜像离线包, 其
-          #        自带 Python 运行时, 不受宿主机 glibc 限制)
+          # 构建逻辑在 deploy/build-executable.sh(容器内以 root 运行, 结束时
+          # chown 回 runner 用户)。shell 指定 bash 以启用 pipefail, 让 docker
+          # 的退出码穿透 tee; build.log 供失败诊断使用。
           docker run --rm \
             -v "$PWD:/src" -w /src \
-            --user "$(id -u):$(id -g)" \
-            -e HOME=/tmp \
+            -e RUNNER_UID="$(id -u)" -e RUNNER_GID="$(id -g)" \
             quay.io/pypa/${{ matrix.manylinux }} \
-            bash -c '/opt/python/cp311-cp311/bin/python -m venv /tmp/venv \
-              && /tmp/venv/bin/pip install -U pip \
-              && /tmp/venv/bin/pip install -r backend/requirements.txt pyinstaller \
-              && /tmp/venv/bin/pyinstaller deploy/aisbench-web.spec --noconfirm --distpath dist --workpath build'
+            /bin/bash /src/deploy/build-executable.sh 2>&1 | tee build.log
 
       - name: 冒烟测试
+        shell: bash
         run: |
-          # 直接在 glibc 2.17 容器内运行, 确证二进制兼容目标环境
-          chmod +x dist/aisbench-web
-          docker run -d --name smoke \
-            -p 8320:8320 \
-            -v "$PWD/dist:/exe:ro" \
-            -e AISBENCH_DATA_DIR=/tmp/aisbench-data \
-            quay.io/pypa/${{ matrix.manylinux }} /exe/aisbench-web
-          for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:8320/api/health -o health.json; then break; fi
-            sleep 1
+          # 直接在 manylinux_2_28 (glibc 2.28) 容器内运行, 确证二进制兼容目标环境
+          (
+            chmod +x dist/aisbench-web
+            docker run -d --name smoke \
+              -p 8320:8320 \
+              -v "$PWD/dist:/exe:ro" \
+              -e AISBENCH_DATA_DIR=/tmp/aisbench-data \
+              quay.io/pypa/${{ matrix.manylinux }} /exe/aisbench-web
+            for i in $(seq 1 60); do
+              if curl -fsS http://127.0.0.1:8320/api/health -o health.json; then break; fi
+              sleep 1
+            done
+            cat health.json; echo
+            curl -fsS http://127.0.0.1:8320/ -o index.html
+            grep -q "AISBench Prefix Tools" index.html
+            docker logs smoke > server.log 2>&1
+            grep -q "内置测试代码: OK" server.log
+            docker rm -f smoke
+          ) 2>&1 | tee smoke.log
+
+      - name: 发布失败日志到 ci-logs 分支
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Actions 网页日志需要登录才能查看; 失败时把关键日志推送到公开
+          # ci-logs 分支, 方便离线排查(匿名可通过 raw.githubusercontent 读取)。
+          REPO="$GITHUB_REPOSITORY"
+          if ! gh api "repos/$REPO/git/ref/heads/ci-logs" >/dev/null 2>&1; then
+            gh api "repos/$REPO/git/refs" \
+              -f ref=refs/heads/ci-logs -f sha="$GITHUB_SHA" >/dev/null 2>&1 || true
+            sleep 3
+          fi
+          for f in pull.log build.log smoke.log server.log health.json; do
+            [ -f "$f" ] || continue
+            name="${{ steps.ver.outputs.tag }}-${{ matrix.name }}-$(date -u +%Y%m%dT%H%M%SZ)-$f"
+            gh api -X PUT "repos/$REPO/contents/logs/$name" \
+              -f message="ci log ${{ steps.ver.outputs.tag }} ${{ matrix.name }}: $f" \
+              -f content="$(base64 -w0 "$f")" \
+              -f branch=ci-logs >/dev/null \
+              || echo "WARN: 上传 $f 到 ci-logs 失败"
           done
-          cat health.json; echo
-          curl -fsS http://127.0.0.1:8320/ -o index.html
-          grep -q "AISBench Prefix Tools" index.html
-          docker logs smoke > server.log 2>&1
-          grep -q "内置测试代码: OK" server.log
-          docker rm -f smoke
 
       - name: 打包产物
         shell: bash
@@ -181,7 +206,7 @@ jobs:
     needs: [docker-image, executable]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
@@ -210,6 +235,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.ver.outputs.tag }}
         run: |
+          # 全程输出同时落盘 release.log, 便于失败时自动发布诊断日志
+          exec > >(tee release.log) 2>&1
           NOTES=$(cat <<'EOF'
           AISBench-Prefix-Tools-Web 网页版发布。
 
@@ -224,7 +251,7 @@ jobs:
           | `aisbench-web-offline_<版本>_linux_amd64.zip` | Docker 镜像离线包(x86_64 服务器) |
           | `aisbench-web-offline_<版本>_linux_arm64.zip` | Docker 镜像离线包(aarch64 服务器) |
           | `aisbench-prefix-tools-web_<版本>_linux_<架构>.docker.tar.gz` | 裸镜像 tar(自行 docker load) |
-          | `aisbench-web_<版本>_linux_<架构>.tar.gz` | 单文件可执行(服务宿主机无需 Docker, 兼容 glibc >= 2.17) |
+          | `aisbench-web_<版本>_linux_<架构>.tar.gz` | 单文件可执行(服务宿主机无需 Docker, 兼容 glibc >= 2.28) |
 
           ## ✨ 功能
 
@@ -243,7 +270,7 @@ jobs:
 
           架构选择: 执行机上 `uname -m` 输出 `x86_64` 选 amd64, `aarch64` 选 arm64。
 
-          可执行文件在 manylinux_2_28 (glibc 2.28) 环境构建, 可直接运行于 RHEL 9+ / 麒麟V10 / openEuler / Ubuntu20.04+ 等主流发行版, 无需安装 Python。更老的系统(如 CentOS 7 / RHEL 8)请改用 Docker 镜像离线包。
+          可执行文件在 manylinux_2_28 (glibc 2.28) 环境构建, 可直接运行于 RHEL 8+ / 麒麟V10 / openEuler / Ubuntu20.04+ 等主流发行版, 无需安装 Python。更老的系统(如 CentOS 7, glibc 2.17)请改用 Docker 镜像离线包。
 
           源码部署(可访问外网时): `git clone` 后 `docker compose up -d --build`。
 
@@ -261,3 +288,23 @@ jobs:
               --title "AISBench-Prefix-Tools-Web ${TAG}" \
               --notes "$NOTES" -R "$GITHUB_REPOSITORY"
           fi
+
+      - name: 发布失败日志到 ci-logs 分支
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REPO="$GITHUB_REPOSITORY"
+          if ! gh api "repos/$REPO/git/ref/heads/ci-logs" >/dev/null 2>&1; then
+            gh api "repos/$REPO/git/refs" \
+              -f ref=refs/heads/ci-logs -f sha="$GITHUB_SHA" >/dev/null 2>&1 || true
+            sleep 3
+          fi
+          [ -f release.log ] || exit 0
+          sleep 1
+          name="${{ steps.ver.outputs.tag }}-release-$(date -u +%Y%m%dT%H%M%SZ)-release.log"
+          gh api -X PUT "repos/$REPO/contents/logs/$name" \
+            -f message="ci log ${{ steps.ver.outputs.tag }}: release.log" \
+            -f content="$(base64 -w0 release.log)" \
+            -f branch=ci-logs >/dev/null || echo "WARN: 上传 release.log 失败"

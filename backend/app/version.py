@@ -1,4 +1,4 @@
 """版本信息"""
 
 APP_NAME = "AISBench-Prefix-Tools-Web"
-__version__ = "1.0.3"
+__version__ = "1.0.4"
