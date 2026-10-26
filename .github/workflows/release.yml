@@ -97,21 +97,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: linux_amd64, runner: ubuntu-latest, os: linux }
-          - { name: linux_arm64, runner: ubuntu-24.04-arm, os: linux }
+          # 在 manylinux2014 (glibc 2.17) 容器内构建, 兼容 CentOS7/RHEL8+/麒麟V10/openEuler
+          - { name: linux_amd64, runner: ubuntu-latest, manylinux: manylinux2014_x86_64 }
+          - { name: linux_arm64, runner: ubuntu-24.04-arm, manylinux: manylinux2014_aarch64 }
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: 安装依赖
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r backend/requirements.txt pyinstaller
 
       - name: 解析版本
         id: ver
@@ -125,14 +117,30 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
-      - name: PyInstaller 打包
-        run: pyinstaller deploy/aisbench-web.spec --noconfirm --distpath dist --workpath build
+      - name: 在 manylinux2014 容器内 PyInstaller 打包
+        run: |
+          # glibc 2.17 构建环境 => 产物可运行于任何 glibc >= 2.17 的 Linux
+          # (CentOS7 / RHEL8+ / 麒麟V10 / openEuler / Ubuntu20.04+)
+          # 注意: venv 与安装必须与打包在同一容器运行内完成(docker run 不保留状态)
+          docker run --rm \
+            -v "$PWD:/src" -w /src \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            quay.io/pypa/${{ matrix.manylinux }} \
+            bash -c '/opt/python/cp311-cp311/bin/python -m venv /tmp/venv \
+              && /tmp/venv/bin/pip install -U pip \
+              && /tmp/venv/bin/pip install -r backend/requirements.txt pyinstaller \
+              && /tmp/venv/bin/pyinstaller deploy/aisbench-web.spec --noconfirm --distpath dist --workpath build'
 
       - name: 冒烟测试
         run: |
+          # 直接在 glibc 2.17 容器内运行, 确证二进制兼容目标环境
           chmod +x dist/aisbench-web
-          AISBENCH_DATA_DIR=/tmp/aisbench-smoke ./dist/aisbench-web > server.log 2>&1 &
-          SERVER_PID=$!
+          docker run -d --name smoke \
+            -p 8320:8320 \
+            -v "$PWD/dist:/exe:ro" \
+            -e AISBENCH_DATA_DIR=/tmp/aisbench-data \
+            quay.io/pypa/${{ matrix.manylinux }} /exe/aisbench-web
           for i in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:8320/api/health -o health.json; then break; fi
             sleep 1
@@ -140,8 +148,9 @@ jobs:
           cat health.json; echo
           curl -fsS http://127.0.0.1:8320/ -o index.html
           grep -q "AISBench Prefix Tools" index.html
+          docker logs smoke > server.log 2>&1
           grep -q "内置测试代码: OK" server.log
-          kill $SERVER_PID
+          docker rm -f smoke
 
       - name: 打包产物
         shell: bash
@@ -203,14 +212,14 @@ jobs:
 
           ## 📦 离线部署包(执行机无需外网)
 
-          在有外网的电脑上下载对应架构的包, 传输到执行机后解压执行 `bash deploy.sh` 即可(详见包内 OFFLINE-README.md):
+          在有外网的电脑上下载对应架构的包, 传输到执行机后解压执行 `bash deploy.sh` 即可, **执行机仅需 Docker 引擎, 无需 Compose 插件**(详见包内 OFFLINE-README.md):
 
           | 文件 | 说明 |
           |------|------|
           | `aisbench-web-offline_<版本>_linux_amd64.zip` | Docker 镜像离线包(x86_64 服务器) |
           | `aisbench-web-offline_<版本>_linux_arm64.zip` | Docker 镜像离线包(aarch64 服务器) |
           | `aisbench-prefix-tools-web_<版本>_linux_<架构>.docker.tar.gz` | 裸镜像 tar(自行 docker load) |
-          | `aisbench-web_<版本>_linux_<架构>.tar.gz` | 单文件可执行(服务宿主机无需 Docker) |
+          | `aisbench-web_<版本>_linux_<架构>.tar.gz` | 单文件可执行(服务宿主机无需 Docker, 兼容 glibc >= 2.17) |
 
           ## ✨ 功能
 
@@ -228,6 +237,8 @@ jobs:
           ```
 
           架构选择: 执行机上 `uname -m` 输出 `x86_64` 选 amd64, `aarch64` 选 arm64。
+
+          可执行文件在 manylinux2014 (glibc 2.17) 环境构建, 可直接运行于 CentOS7 / RHEL8+ / 麒麟V10 / openEuler / Ubuntu20.04+ 等主流发行版, 无需安装 Python。
 
           源码部署(可访问外网时): `git clone` 后 `docker compose up -d --build`。
 

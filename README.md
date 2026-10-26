@@ -41,7 +41,7 @@
 
 ### 前置要求
 
-- 执行机上已安装 Docker 与 Docker Compose（v2）
+- 执行机上已安装 Docker 引擎（无需 Docker Compose 插件，离线部署脚本使用 `docker run` 直接启动）
 - 执行机可 SSH 到目标测试机（也可以就是本机：服务容器通过 `host.docker.internal` 访问宿主机）
 
 ### 方式一：Docker 镜像离线包（推荐，执行机部署）
@@ -75,6 +75,7 @@ chmod +x aisbench-web
 ```
 
 可执行文件已内置后端 + 前端 + 测试代码，无需安装 Python；数据目录默认为运行目录下的 `data/`（可用 `AISBENCH_DATA_DIR` 指定）。
+可执行文件在 manylinux2014（glibc 2.17）环境构建，兼容 CentOS 7 / RHEL 8+ / 麒麟 V10 / openEuler / Ubuntu 20.04+ 等主流发行版。
 
 ### 方式三：源码构建（可访问外网时）
 

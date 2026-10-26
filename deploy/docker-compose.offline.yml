@@ -1,5 +1,7 @@
-# 离线部署用 compose 模板(发布时 __VERSION__ 会被替换为实际版本号)
-# 镜像由 deploy.sh 执行 docker load 预先导入, 无需联网构建
+# 可选的 compose 模板(发布时 __VERSION__ 会被替换为实际版本号)
+# deploy.sh 已改用 docker run 直接启动, 不依赖 Compose 插件;
+# 此文件供已安装 docker compose v2 的环境自行编排使用。
+# 镜像由 deploy.sh 执行 docker load 预先导入, 无需联网构建。
 services:
   aisbench-web:
     image: aisbench-prefix-tools-web:__VERSION__

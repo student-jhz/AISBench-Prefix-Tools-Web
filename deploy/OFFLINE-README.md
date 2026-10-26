@@ -17,6 +17,9 @@ bash deploy.sh
 脚本会自动 `docker load` 镜像并启动服务, 完成后浏览器访问
 `http://<执行机IP>:8320`。上传文件与测试结果持久化在解压目录的 `data/` 下。
 
+> 前置要求仅需 **Docker 引擎**, 不需要安装 Docker Compose 插件
+> (脚本使用 `docker run` 直接启动容器)。
+
 升级新版本: 下载新离线包重复上述步骤(同一容器名会自动重建)。
 
 ### 架构选择
@@ -40,6 +43,8 @@ chmod +x aisbench-web
 ```
 
 可执行文件已内置后端、前端与测试代码, 无需安装 Python。
+在 manylinux2014 (glibc 2.17) 环境构建, 兼容 CentOS 7 / RHEL 8+ /
+麒麟 V10 / openEuler / Ubuntu 20.04+ 等主流发行版 (aarch64 与 x86_64)。
 数据目录默认为**运行目录**下的 `data/`, 也可用 `AISBENCH_DATA_DIR`
 环境变量指定。
 
@@ -53,3 +58,29 @@ chmod +x aisbench-web
 
 > 无论哪种方式, **被测执行机(SSH 目标)必须已安装 Docker** —— 测试容器
 > 会在执行机上创建运行。
+
+## 常见问题
+
+### `docker: 'compose' is not a docker command`
+
+新版 `deploy.sh` 已不使用 Compose。如使用旧版离线包, 可手动启动:
+
+```bash
+docker load -i aisbench-prefix-tools-web_<版本>_linux_<架构>.docker.tar.gz
+docker run -d --name aisbench-prefix-tools-web \
+  -p 8320:8320 \
+  -v "$PWD/data:/app/data" \
+  --add-host host.docker.internal:host-gateway \
+  --restart unless-stopped \
+  aisbench-prefix-tools-web:<版本>
+```
+
+### `GLIBC_x.xx not found`
+
+可执行文件对系统 glibc 版本有要求。如报
+`version 'GLIBC_2.xx' not found`, 说明系统 glibc 低于构建环境
+(v1.0.2 起已在 glibc 2.17 环境构建, 覆盖主流发行版)。仍遇到时:
+
+1. 优先改用 **Docker 镜像离线包**(方式一), 镜像内自带 Python 运行时,
+   不受宿主机 glibc 限制;
+2. 或在有外网的机器上下载本页对应架构的离线包后传输部署。
