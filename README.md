@@ -4,6 +4,8 @@ AISBench-Prefix-Tools 的网页版（Web Edition）—— 将原 Windows 桌面�
 
 > 上游桌面版项目：[ucm-system/AISBench-Prefix-Tools](https://github.com/ucm-system/AISBench-Prefix-Tools)
 
+📐 架构设计文档：[docs/DESIGN.md](docs/DESIGN.md)
+
 ## 定位
 
 - **不再打包 Windows EXE**，改为在执行机上以 **Docker 容器服务** 方式部署，浏览器直接访问。
