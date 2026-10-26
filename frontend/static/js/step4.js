@@ -33,19 +33,36 @@ const READ_KEY_MAP = {
   POD_INFO: "pod_info",
 };
 
+// 步骤2 表单字段 -> 步骤4 配置字段(进入步骤4时自动继承)
+const STEP2_MAP = {
+  model_name: "modelName",
+  model_path: "modelPath",
+  host_ip: "vllmIp",
+  host_port: "vllmPort",
+  api_key: "apiKey",
+};
+
+// 用户在步骤4手动编辑过的字段, 不再被步骤2的值覆盖
+const dirtyFields = new Set();
+
 
 export function initStep4() {
   loadDefaults();
 
   const preview = debounce(updatePreview, 400);
-  for (const sel of Object.values(FIELD_IDS)) {
-    $(sel).addEventListener("input", preview);
-    $(sel).addEventListener("change", preview);
+  for (const [field, sel] of Object.entries(FIELD_IDS)) {
+    const input = $(sel);
+    // 用户手动编辑 => 标记 dirty, 后续从步骤2同步时跳过该字段
+    input.addEventListener("input", () => { dirtyFields.add(field); preview(); });
+    input.addEventListener("change", () => { dirtyFields.add(field); preview(); });
   }
 
   $("#configSaveBtn").addEventListener("click", saveConfig);
   $("#configVerifyBtn").addEventListener("click", verifyConfig);
   $("#configReadBtn").addEventListener("click", readConfig);
+
+  // 供 main.js 在切换到步骤4视图时调用, 保证步骤2后填的值能继承过来
+  window.syncStep4FromStep2 = syncFromStep2;
 }
 
 
@@ -70,17 +87,31 @@ async function loadDefaults() {
       $("#cfgDatasetPath").value = data.dataset_path_default;
       $("#cfgDatasetPath").placeholder = data.dataset_path_default;
     }
-    // 从步骤 2 表单同步
-    const f = G.form;
-    if (f.modelName) $("#cfgModelName").value = f.modelName;
-    if (f.modelPath) $("#cfgModelPath").value = f.modelPath;
-    if (f.vllmIp) $("#cfgHostIp").value = f.vllmIp;
-    if (f.vllmPort) $("#cfgHostPort").value = f.vllmPort;
-    if (f.apiKey) $("#cfgApiKey").value = f.apiKey;
+    // 从步骤 2 表单同步(未手动编辑过的字段)
+    syncFromStep2();
     updatePreview();
   } catch (err) {
     setMsg("#configStatusMsg", `加载默认配置失败: ${err.message}`, "error");
   }
+}
+
+
+/** 从步骤2表单继承模型/服务信息(仅覆盖未手动编辑过的字段) */
+export function syncFromStep2() {
+  const f = G.form;
+  let changed = false;
+  for (const [field, source] of Object.entries(STEP2_MAP)) {
+    const value = f[source];
+    if (!value) continue;                   // 步骤2未填写则保留现有值
+    if (dirtyFields.has(field)) continue;   // 尊重用户在步骤4的手动修改
+    const input = $(FIELD_IDS[field]);
+    const text = String(value);
+    if (input.value !== text) {
+      input.value = text;
+      changed = true;
+    }
+  }
+  if (changed) updatePreview();
 }
 
 

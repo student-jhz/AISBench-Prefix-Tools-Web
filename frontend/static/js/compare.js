@@ -9,6 +9,7 @@ const SERIES_COLORS = { a: "#2563eb", b: "#f59e0b" };
 
 let compareData = null;   // /api/compare/load 响应
 let computeBody = null;   // 当前 compute/export 请求体
+let compareOptions = [];  // 可选数据源(结果历史 + 已上传CSV)
 
 
 export function initCompare() {
@@ -42,7 +43,7 @@ export function initCompare() {
 function updatePickVisibility(side) {
   const isUpload = $(`#cmpType${side}`).value === "upload";
   $(`.cmp-pick[data-side="${side}"]`).hidden = !isUpload;
-  $(`#cmpFile${side}`).hidden = isUpload;
+  renderSideOptions(side);  // 切换来源类型后重渲染该侧可选项
 }
 
 
@@ -59,57 +60,64 @@ async function refreshSources() {
     uploads = items.filter(i => i.kind === "compare-csv" && !i.error);
   } catch { /* ignore */ }
 
-  const options = [];
+  compareOptions = [];
   for (const run of runs) {
     for (const file of run.csv_files) {
-      options.push({
+      compareOptions.push({
+        type: "result",
         value: JSON.stringify({ type: "result", run_id: run.run_id, file }),
         label: `${run.run_id} / ${file}`,
       });
     }
   }
   for (const u of uploads) {
-    options.push({
+    compareOptions.push({
+      type: "upload",
       value: JSON.stringify({ type: "upload", upload_id: u.id }),
       label: `上传: ${u.filename} (${u.rows}行)`,
     });
   }
 
-  for (const side of ["A", "B"]) {
-    const select = $(`#cmpFile${side}`);
-    const previous = select.value;
-    select.innerHTML = "";
-    if (!options.length) {
-      select.append(el("option", { value: "" }, "(暂无可选数据源)"));
-      continue;
-    }
-    for (const opt of options) {
-      select.append(el("option", { value: opt.value }, opt.label));
-    }
-    // 恢复之前的选择
-    if (previous && options.some(o => o.value === previous)) {
-      select.value = previous;
-    }
+  for (const side of ["A", "B"]) renderSideOptions(side);
+}
+
+
+/** 按当前来源类型(结果历史/上传CSV)渲染某一侧的可选项 */
+function renderSideOptions(side) {
+  const mode = $(`#cmpType${side}`).value;
+  const select = $(`#cmpFile${side}`);
+  const previous = select.value;
+  const options = compareOptions.filter(o => o.type === mode);
+  select.innerHTML = "";
+  if (!options.length) {
+    select.append(el("option", { value: "" }, mode === "upload"
+      ? "(暂无已上传CSV, 请点击“选择文件”)"
+      : "(暂无可选数据源)"));
+    return;
+  }
+  for (const opt of options) {
+    select.append(el("option", { value: opt.value }, opt.label));
+  }
+  // 恢复之前的选择
+  if (previous && options.some(o => o.value === previous)) {
+    select.value = previous;
   }
 }
 
 
 function sourceOf(side) {
   const type = $(`#cmpType${side}`).value;
-  if (type === "upload") {
-    const id = selectValue(`#cmpFile${side}`, "upload_id");
-    if (!id) {
-      toast(`请先上传或选择对比${side === "A" ? "基准 A" : "对比 B"}的CSV文件`, "warning");
-      return null;
-    }
-    return { type: "upload", upload_id: id };
-  }
-  const value = selectValue(`#cmpFile${side}`, "result");
-  if (!value) {
-    toast(`请先选择对比${side === "A" ? "基准 A" : "对比 B"}的结果文件`, "warning");
+  // 选项值为 JSON 字符串: {type:"result",run_id,file} 或 {type:"upload",upload_id}
+  // (与后端 /api/compare/* 的 _resolve_source 期望格式一致)
+  const parsed = selectValue(`#cmpFile${side}`, type);
+  if (!parsed) {
+    const label = side === "A" ? "基准 A" : "对比 B";
+    toast(type === "upload"
+      ? `请先上传或选择对比${label}的CSV文件`
+      : `请先选择对比${label}的结果文件`, "warning");
     return null;
   }
-  return value;
+  return parsed;
 }
 
 

@@ -55,6 +55,7 @@ export function showView(view) {
   $$(".view").forEach(v => v.classList.remove("active"));
   $(`#view-${view}`).classList.add("active");
   $$(".nav-item").forEach(n => n.classList.toggle("active", n.dataset.view === view));
+  if (view === "step4") window.syncStep4FromStep2?.();
   if (view === "step6") window.refreshRuns?.();
   if (view === "compare") window.refreshCompareSources?.();
   if (view === "logtools") window.refreshLogtoolsStatus?.();
