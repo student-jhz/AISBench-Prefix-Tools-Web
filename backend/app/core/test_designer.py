@@ -7,7 +7,7 @@
 import random
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Dict, Optional, Tuple
+from typing import List, Optional, Tuple
 
 
 @dataclass
@@ -41,12 +41,12 @@ class TestCase:
         return cls(
             input_len=int(d['input_len']),
             output_len=int(d['output_len']),
-            data_num_recommended=int(d.get('data_num_recommended', 0)),
-            data_num_min=int(d.get('data_num_min', 0)),
-            concurrency_recommended=int(d.get('concurrency_recommended', 0)),
-            concurrency_max=int(d.get('concurrency_max', 0)),
-            repeat_rate=float(d.get('repeat_rate', 0.9)),
-            dp=int(d.get('dp', 1)),
+            data_num_recommended=int(d.get('data_num_recommended') or 0),
+            data_num_min=int(d.get('data_num_min') or 0),
+            concurrency_recommended=int(d.get('concurrency_recommended') or 0),
+            concurrency_max=int(d.get('concurrency_max') or 0),
+            repeat_rate=float(d.get('repeat_rate') or 0.9),
+            dp=int(d.get('dp') or 1),
             is_custom=bool(d.get('is_custom', False)),
         )
 

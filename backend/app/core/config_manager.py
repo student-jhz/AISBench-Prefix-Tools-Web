@@ -146,7 +146,11 @@ def compare_config(config: Dict[str, str], remote_content: str) -> Tuple[List[st
     """界面配置与容器回读内容比较, 返回 (不一致项列表, 回读解析值)"""
     saved = parse_config_content(remote_content)
     mismatches = []
-    for field, key in FIELD_TO_CONFIG_KEY.items():
+    # 与桌面版一致: 仅比较关键字段(POD_INFO 存在格式化差异不比较)
+    key_fields = {'model_path': 'MODEL_PATH', 'model_name': 'MODEL_NAME',
+                  'host_ip': 'HOST_IP', 'host_port': 'HOST_PORT',
+                  'dataset_path': 'DATASET_PATH'}
+    for field, key in key_fields.items():
         gui_val = str(config.get(field, '') or '')
         saved_val = str(saved.get(key, '') or '')
         if gui_val and saved_val and gui_val != saved_val:

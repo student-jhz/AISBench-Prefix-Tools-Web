@@ -1,7 +1,6 @@
 """LogParser 日志解析测试"""
 
 import csv
-from pathlib import Path
 
 from app.core.log_parser import (
     LogParser, parse_single_log, parse_log_directory, result_to_csv_row, CSV_FIELDS,

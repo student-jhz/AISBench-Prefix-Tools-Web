@@ -1,0 +1,142 @@
+"""API 请求/响应模型"""
+
+from typing import Dict, List, Optional
+
+from pydantic import BaseModel, Field
+
+
+# ------------------------------------------------------------ SSH
+
+class SSHConnectRequest(BaseModel):
+    host: str = Field(min_length=1)
+    port: int = Field(default=22, ge=1, le=65535)
+    username: str = Field(min_length=1)
+    password: Optional[str] = None
+    key_upload_id: Optional[str] = None
+    timeout: int = Field(default=10, ge=1, le=120)
+
+
+# ------------------------------------------------------------ 部署
+
+class ImageSource(BaseModel):
+    type: str = Field(pattern="^(upload|remote)$")
+    upload_id: Optional[str] = None
+    remote_path: Optional[str] = None
+
+
+class CodeSource(BaseModel):
+    source: str = Field(pattern="^(builtin|zip)$")
+    zip_upload_id: Optional[str] = None
+
+
+class DeployStartRequest(BaseModel):
+    image: ImageSource
+    model_path: str = Field(min_length=1)
+    work_dir: str = "/tmp/AISBench_Prefix_Tools"
+    code: CodeSource = Field(default_factory=lambda: CodeSource(source="builtin"))
+    clean_work_dir: bool = False
+
+
+class RemoteTarCheckRequest(BaseModel):
+    remote_path: str = Field(min_length=1)
+
+
+# ------------------------------------------------------------ 配置
+
+class ConfigPayload(BaseModel):
+    config: Dict[str, str]
+
+
+# ------------------------------------------------------------ 测试用例
+
+class DesignerParams(BaseModel):
+    single_kv_cache: int = Field(ge=0)
+    dp: int = Field(default=1, ge=1)
+    max_request_length: int = Field(ge=0)
+    repeat_rate: float = Field(default=0.9, ge=0.0, le=1.0)
+    request_rate: float = Field(default=0.0, ge=0.0)
+
+
+class DesignerGenerateRequest(DesignerParams):
+    input_lengths: List[int] = Field(default_factory=list)
+    output_lengths: List[int] = Field(default_factory=list)
+
+
+class DesignerCase(BaseModel):
+    input_len: int = Field(ge=1)
+    output_len: int = Field(ge=1)
+    data_num_recommended: int = Field(ge=1)
+    data_num_min: Optional[int] = None
+    concurrency_recommended: int = Field(ge=1)
+    concurrency_max: Optional[int] = None
+    repeat_rate: Optional[float] = None
+    dp: Optional[int] = None
+    is_custom: bool = False
+
+
+class DesignerCasesRequest(DesignerParams):
+    cases: List[DesignerCase] = Field(min_length=1)
+
+
+class DesignerScriptRequest(DesignerCasesRequest):
+    pass
+
+
+# ------------------------------------------------------------ 执行
+
+class ExecuteStartRequest(BaseModel):
+    designer: Dict
+    run_name: Optional[str] = None
+
+
+# ------------------------------------------------------------ 清理
+
+class CleanupRequest(BaseModel):
+    remove_container: bool = True
+    clean_work_dir: bool = True
+    work_dir: Optional[str] = None
+
+
+# ------------------------------------------------------------ 日志工具
+
+class LogtoolsConnectRequest(BaseModel):
+    host: str = Field(min_length=1)
+    port: int = Field(default=22, ge=1, le=65535)
+    username: str = Field(min_length=1)
+    password: Optional[str] = None
+    key_upload_id: Optional[str] = None
+    timeout: int = Field(default=10, ge=1, le=120)
+
+
+class LogtoolsGrepRequest(BaseModel):
+    server: str = Field(default="session", pattern="^(session|other)$")
+    mode: str = Field(pattern="^(host|container|docker_logs)$")
+    path: Optional[str] = None
+    container: Optional[str] = None
+
+
+class LogtoolsViewRequest(LogtoolsGrepRequest):
+    pass
+
+
+# ------------------------------------------------------------ 结果对比
+
+class CompareSource(BaseModel):
+    type: str = Field(pattern="^(upload|result)$")
+    upload_id: Optional[str] = None
+    run_id: Optional[str] = None
+    file: Optional[str] = None
+
+
+class CompareLoadRequest(BaseModel):
+    a: CompareSource
+    b: CompareSource
+
+
+class CompareComputeRequest(CompareLoadRequest):
+    metrics: List[str] = Field(default_factory=list)
+    match_indices: Optional[List[int]] = None  # None = 全部
+
+
+class CompareExportRequest(CompareComputeRequest):
+    pass
