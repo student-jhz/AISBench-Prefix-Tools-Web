@@ -43,9 +43,9 @@ chmod +x aisbench-web
 ```
 
 可执行文件已内置后端、前端与测试代码, 无需安装 Python。
-在 manylinux_2_28 (glibc 2.28) 环境构建, 兼容 RHEL 9+ / 麒麟 V10 /
-openEuler / Ubuntu 20.04+ 等主流发行版 (aarch64 与 x86_64)。
-更老的系统(如 CentOS 7 / RHEL 8, glibc < 2.28)请改用方式一。
+在 manylinux2014 (glibc 2.17) 环境构建, 兼容 CentOS 7+ / RHEL 7+ /
+麒麟 V10 / openEuler / Ubuntu 18.04+ 等主流发行版 (aarch64 与 x86_64)。
+更老的系统请改用方式一。
 数据目录默认为**运行目录**下的 `data/`, 也可用 `AISBENCH_DATA_DIR`
 环境变量指定。
 
@@ -67,7 +67,7 @@ openEuler / Ubuntu 20.04+ 等主流发行版 (aarch64 与 x86_64)。
 Release 页面空说明发布流水线没有跑完 —— 全部产物构建成功后才会上传。
 到仓库 Actions 页查看 `Release` 工作流: 若 job 显示红叉, 在其中找到失败
 步骤查看日志; 全绿后 Release 页才会出现文件。v1.0.2/v1.0.3 曾因构建
-环境问题发布失败, v1.0.4 起已修复, 请下载最新版本。
+环境问题发布失败, v1.0.5 起已修复, 请下载最新版本。
 
 ### `docker: 'compose' is not a docker command`
 
@@ -87,7 +87,7 @@ docker run -d --name aisbench-prefix-tools-web \
 
 可执行文件对系统 glibc 版本有要求。如报
 `version 'GLIBC_2.xx' not found`, 说明系统 glibc 低于构建环境
-(v1.0.4 起在 glibc 2.28 环境构建)。遇到时:
+(v1.0.5 起在 glibc 2.17 环境构建)。遇到时:
 
 1. 优先改用 **Docker 镜像离线包**(方式一), 镜像内自带 Python 运行时,
    不受宿主机 glibc 限制;

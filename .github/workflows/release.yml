@@ -97,11 +97,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # 在 manylinux_2_28 (glibc 2.28) 容器内构建, 产物可运行于
-          # RHEL 8+ / 麒麟V10 / openEuler / Ubuntu20.04+ 等 glibc >= 2.28
-          # 的主流发行版; 更老系统请使用 Docker 镜像离线包(自带 Python)。
-          - { name: linux_amd64, runner: ubuntu-latest, manylinux: manylinux_2_28_x86_64 }
-          - { name: linux_arm64, runner: ubuntu-24.04-arm, manylinux: manylinux_2_28_aarch64 }
+          # 在 manylinux2014 (glibc 2.17) 容器内构建, 且 Python 用
+          # python-build-standalone(glibc 2.17 基线, 共享 libpython),
+          # 产物可运行于 CentOS 7+ / RHEL 7+ / 麒麟V10 / openEuler /
+          # Ubuntu 18.04+ 等 glibc >= 2.17 的主流发行版。
+          - { name: linux_amd64, runner: ubuntu-latest, manylinux: manylinux2014_x86_64 }
+          - { name: linux_arm64, runner: ubuntu-24.04-arm, manylinux: manylinux2014_aarch64 }
     steps:
       - uses: actions/checkout@v5
         with:
@@ -123,7 +124,7 @@ jobs:
         shell: bash
         run: docker pull "quay.io/pypa/${{ matrix.manylinux }}" 2>&1 | tee pull.log
 
-      - name: 在 manylinux_2_28 容器内 PyInstaller 打包
+      - name: 在 manylinux2014 容器内 PyInstaller 打包
         shell: bash
         run: |
           # 构建逻辑在 deploy/build-executable.sh(容器内以 root 运行, 结束时
@@ -138,7 +139,8 @@ jobs:
       - name: 冒烟测试
         shell: bash
         run: |
-          # 直接在 manylinux_2_28 (glibc 2.28) 容器内运行, 确证二进制兼容目标环境
+          # 直接在 manylinux2014 (glibc 2.17) 容器内运行, 确证二进制
+          # 兼容 CentOS 7 / RHEL 7 等老系统环境
           (
             chmod +x dist/aisbench-web
             docker run -d --name smoke \
@@ -251,7 +253,7 @@ jobs:
           | `aisbench-web-offline_<版本>_linux_amd64.zip` | Docker 镜像离线包(x86_64 服务器) |
           | `aisbench-web-offline_<版本>_linux_arm64.zip` | Docker 镜像离线包(aarch64 服务器) |
           | `aisbench-prefix-tools-web_<版本>_linux_<架构>.docker.tar.gz` | 裸镜像 tar(自行 docker load) |
-          | `aisbench-web_<版本>_linux_<架构>.tar.gz` | 单文件可执行(服务宿主机无需 Docker, 兼容 glibc >= 2.28) |
+          | `aisbench-web_<版本>_linux_<架构>.tar.gz` | 单文件可执行(服务宿主机无需 Docker, 兼容 glibc >= 2.17) |
 
           ## ✨ 功能
 
@@ -270,7 +272,7 @@ jobs:
 
           架构选择: 执行机上 `uname -m` 输出 `x86_64` 选 amd64, `aarch64` 选 arm64。
 
-          可执行文件在 manylinux_2_28 (glibc 2.28) 环境构建, 可直接运行于 RHEL 8+ / 麒麟V10 / openEuler / Ubuntu20.04+ 等主流发行版, 无需安装 Python。更老的系统(如 CentOS 7, glibc 2.17)请改用 Docker 镜像离线包。
+          可执行文件在 manylinux2014 (glibc 2.17) 环境构建, 可直接运行于 CentOS 7+ / RHEL 7+ / 麒麟V10 / openEuler / Ubuntu 18.04+ 等主流发行版, 无需安装 Python。更老的系统请改用 Docker 镜像离线包(镜像自带 Python 运行时)。
 
           源码部署(可访问外网时): `git clone` 后 `docker compose up -d --build`。
 

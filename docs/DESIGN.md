@@ -45,7 +45,7 @@ GitHub Actions（`.github/workflows/release.yml`）自动构建并附加到 Rele
 |------|----------|----------|
 | `aisbench-web-offline_<版本>_linux_<架构>.zip` | `docker build` + `docker save`，含镜像 tar + 可选 compose + deploy.sh | 执行机部署（推荐），`bash deploy.sh` 自动 load 并 `docker run`（不依赖 Compose 插件） |
 | `aisbench-prefix-tools-web_<版本>_linux_<架构>.docker.tar.gz` | 同上（裸镜像 tar） | 自行 `docker load` |
-| `aisbench-web_<版本>_linux_<架构>.tar.gz` | manylinux_2_28（glibc 2.28）容器内 PyInstaller onefile（`deploy/aisbench-web.spec`），内置后端+前端+core_code | 服务宿主机无 Docker 的 Linux 机器（glibc ≥ 2.28），SSH 控制执行机；更老系统请用 Docker 镜像包 |
+| `aisbench-web_<版本>_linux_<架构>.tar.gz` | manylinux2014（glibc 2.17）容器内 PyInstaller onefile（`deploy/aisbench-web.spec`，Python 为 python-build-standalone 共享库构建），内置后端+前端+core_code | 服务宿主机无 Docker 的 Linux 机器（glibc ≥ 2.17），SSH 控制执行机；更老系统请用 Docker 镜像包 |
 
 架构覆盖 `linux/amd64` 与 `linux/arm64`。PyInstaller 打包形态下
 `app/paths.py` 将资源根切换到 `sys._MEIPASS`（按源码布局打入
