@@ -1,0 +1,247 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要构建并发布的版本标签(如 v1.0.1)"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: aisbench-prefix-tools-web
+
+jobs:
+  # ------------------------------------------------------------ Docker 镜像 tar 包
+  docker-image:
+    name: Docker 镜像包 (linux/${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-latest }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: 解析版本
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: 构建镜像
+        run: docker build -t "${IMAGE_NAME}:${{ steps.ver.outputs.version }}" .
+
+      - name: 镜像冒烟测试
+        run: |
+          docker run -d --name smoke -p 8320:8320 "${IMAGE_NAME}:${{ steps.ver.outputs.version }}"
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8320/api/health -o health.json; then break; fi
+            sleep 1
+          done
+          cat health.json; echo
+          curl -fsS http://127.0.0.1:8320/ -o index.html
+          grep -q "AISBench Prefix Tools" index.html
+          docker rm -f smoke
+
+      - name: 导出镜像 tar
+        run: |
+          docker save "${IMAGE_NAME}:${{ steps.ver.outputs.version }}" | gzip \
+            > "${IMAGE_NAME}_${{ steps.ver.outputs.version }}_linux_${{ matrix.arch }}.docker.tar.gz"
+
+      - name: 组装离线部署包
+        run: |
+          VER="${{ steps.ver.outputs.version }}"
+          BUNDLE="aisbench-web-offline_${VER}_linux_${{ matrix.arch }}"
+          mkdir -p "bundle/${BUNDLE}"
+          cp "${IMAGE_NAME}_${VER}_linux_${{ matrix.arch }}.docker.tar.gz" "bundle/${BUNDLE}/"
+          sed "s/__VERSION__/${VER}/g" deploy/docker-compose.offline.yml \
+            > "bundle/${BUNDLE}/docker-compose.yml"
+          sed -e "s/__VERSION__/${VER}/g" -e "s/__ARCH__/${{ matrix.arch }}/g" \
+            deploy/deploy_offline.sh > "bundle/${BUNDLE}/deploy.sh"
+          chmod +x "bundle/${BUNDLE}/deploy.sh"
+          cp deploy/OFFLINE-README.md "bundle/${BUNDLE}/"
+          (cd bundle && zip -r "../${BUNDLE}.zip" "${BUNDLE}")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-${{ matrix.arch }}
+          path: |
+            *.docker.tar.gz
+            aisbench-web-offline_*.zip
+          if-no-files-found: error
+
+  # ------------------------------------------------------------ 单文件可执行
+  executable:
+    name: 单文件可执行 (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux_amd64, runner: ubuntu-latest, os: linux }
+          - { name: linux_arm64, runner: ubuntu-24.04-arm, os: linux }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt pyinstaller
+
+      - name: 解析版本
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: PyInstaller 打包
+        run: pyinstaller deploy/aisbench-web.spec --noconfirm --distpath dist --workpath build
+
+      - name: 冒烟测试
+        run: |
+          chmod +x dist/aisbench-web
+          AISBENCH_DATA_DIR=/tmp/aisbench-smoke ./dist/aisbench-web > server.log 2>&1 &
+          SERVER_PID=$!
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8320/api/health -o health.json; then break; fi
+            sleep 1
+          done
+          cat health.json; echo
+          curl -fsS http://127.0.0.1:8320/ -o index.html
+          grep -q "AISBench Prefix Tools" index.html
+          grep -q "内置测试代码: OK" server.log
+          kill $SERVER_PID
+
+      - name: 打包产物
+        shell: bash
+        run: |
+          VER="${{ steps.ver.outputs.version }}"
+          mkdir pkg
+          cp dist/aisbench-web pkg/
+          cp deploy/OFFLINE-README.md pkg/
+          tar czf "aisbench-web_${VER}_${{ matrix.name }}.tar.gz" \
+            -C pkg aisbench-web OFFLINE-README.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: executable-${{ matrix.name }}
+          path: |
+            aisbench-web_*.tar.gz
+            aisbench-web_*.zip
+          if-no-files-found: error
+
+  # ------------------------------------------------------------ 发布 Release
+  release:
+    name: 发布 Release
+    needs: [docker-image, executable]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: 解析版本
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 查看产物清单
+        run: ls -lh artifacts/
+
+      - name: 创建/更新 Release 并上传产物
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          NOTES=$(cat <<'EOF'
+          AISBench-Prefix-Tools-Web 网页版发布。
+
+          将 Windows 桌面向导工具完整迁移为部署在执行机上的容器化 Web 服务, 浏览器访问 `http://<执行机IP>:8320` 即可完成 Prefix Cache 性能测试全流程。
+
+          ## 📦 离线部署包(执行机无需外网)
+
+          在有外网的电脑上下载对应架构的包, 传输到执行机后解压执行 `bash deploy.sh` 即可(详见包内 OFFLINE-README.md):
+
+          | 文件 | 说明 |
+          |------|------|
+          | `aisbench-web-offline_<版本>_linux_amd64.zip` | Docker 镜像离线包(x86_64 服务器) |
+          | `aisbench-web-offline_<版本>_linux_arm64.zip` | Docker 镜像离线包(aarch64 服务器) |
+          | `aisbench-prefix-tools-web_<版本>_linux_<架构>.docker.tar.gz` | 裸镜像 tar(自行 docker load) |
+          | `aisbench-web_<版本>_linux_<架构>.tar.gz` | 单文件可执行(服务宿主机无需 Docker) |
+
+          ## ✨ 功能
+
+          - **六步测试向导**: SSH 连接 → 文件与模型 → Docker 部署(实时日志/可取消) → config.py 配置(回读校验) → 测试用例设计(KV cache 计算/增删改/系数调整) → 执行测试(MODEL_PATH 预检查/日志下载/CSV 提取/结果历史)
+          - **远程日志工具**: 宿主机/容器/docker logs 三种来源, KV cache 筛选一键填入
+          - **结果对比分析**: 用例自动匹配, 21 项指标差异表 + 柱状图, 导出 CSV
+          - **环境清理**: 容器删除 + 工作目录清理
+
+          ## 🚀 快速开始(离线)
+
+          ```bash
+          unzip aisbench-web-offline_<版本>_linux_amd64.zip
+          cd aisbench-web-offline_<版本>_linux_amd64
+          bash deploy.sh
+          ```
+
+          架构选择: 执行机上 `uname -m` 输出 `x86_64` 选 amd64, `aarch64` 选 arm64。
+
+          源码部署(可访问外网时): `git clone` 后 `docker compose up -d --build`。
+
+          ## 🔗 相关链接
+
+          - 上游桌面版: https://github.com/ucm-system/AISBench-Prefix-Tools
+          - 架构设计: [docs/DESIGN.md](https://github.com/student-jhz/AISBench-Prefix-Tools-Web/blob/main/docs/DESIGN.md)
+          EOF
+          )
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Release 已存在, 上传/覆盖产物"
+            gh release upload "$TAG" artifacts/* --clobber -R "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" artifacts/* \
+              --title "AISBench-Prefix-Tools-Web ${TAG}" \
+              --notes "$NOTES" -R "$GITHUB_REPOSITORY"
+          fi

@@ -35,14 +35,48 @@
 - [x] **远程日志工具**：当前执行机或**其他服务器**临时连接；宿主机文件 / 容器内文件 / `docker logs` 三种来源；浏览目录、筛选 KV cache 信息并**一键填入步骤 5**、查看日志尾部内容
 - [x] **结果对比分析**：两份结果 CSV（历史 run 或上传），按输入/输出长度自动匹配用例；21 项指标（TTFT/TPOT/E2E/吞吐/QPS/命中率等）分组勾选；差异表（A/B/Δ/Δ%，正绿负红）+ 双柱状图 + 导出对比 CSV
 
-## 快速部署（推荐）
+## 部署方式
+
+执行机通常位于内网、无法访问外网，推荐使用 Release 中的**离线部署包**（CI 在每次发版时自动构建，无需 clone 代码 / 拉基础镜像 / 安装依赖）。
 
 ### 前置要求
 
 - 执行机上已安装 Docker 与 Docker Compose（v2）
 - 执行机可 SSH 到目标测试机（也可以就是本机：服务容器通过 `host.docker.internal` 访问宿主机）
 
-### 一键启动
+### 方式一：Docker 镜像离线包（推荐，执行机部署）
+
+1. 在**有外网的电脑**上，从 [Releases](https://github.com/student-jhz/AISBench-Prefix-Tools-Web/releases) 下载 `aisbench-web-offline_<版本>_linux_<架构>.zip`
+   - 架构选择：执行机上 `uname -m` 输出 `x86_64` 选 `amd64`，`aarch64` 选 `arm64`
+2. 通过 SCP / U 盘等方式传输到执行机并解压
+3. 执行部署脚本：
+
+```bash
+unzip aisbench-web-offline_<版本>_linux_<架构>.zip
+cd aisbench-web-offline_<版本>_linux_<架构>
+bash deploy.sh        # 自动 docker load 镜像并启动服务
+```
+
+浏览器访问：**http://\<执行机IP\>:8320**，全程无需访问外网。
+
+升级新版本：下载新的离线包，重复上述步骤即可（同名容器自动重建）。
+
+> 也可以只下载裸镜像 tar：`aisbench-prefix-tools-web_<版本>_linux_<架构>.docker.tar.gz`，
+> 自行 `docker load -i <文件>` 后按需启动。
+
+### 方式二：单文件可执行（服务宿主机无 Docker 时）
+
+如果 Web 服务不部署在执行机上、而是部署在跳板机 / 办公电脑等**没有 Docker** 的机器（服务通过 SSH 控制执行机，执行机本身仍需 Docker）：
+
+```bash
+tar xzf aisbench-web_<版本>_linux_<架构>.tar.gz
+chmod +x aisbench-web
+./aisbench-web            # 默认 8320 端口, AISBENCH_PORT 可修改
+```
+
+可执行文件已内置后端 + 前端 + 测试代码，无需安装 Python；数据目录默认为运行目录下的 `data/`（可用 `AISBENCH_DATA_DIR` 指定）。
+
+### 方式三：源码构建（可访问外网时）
 
 ```bash
 git clone https://github.com/student-jhz/AISBench-Prefix-Tools-Web.git
@@ -50,14 +84,7 @@ cd AISBench-Prefix-Tools-Web
 docker compose up -d --build
 ```
 
-浏览器访问：**http://\<执行机IP\>:8320**
-
-升级到新版本：
-
-```bash
-git pull
-docker compose up -d --build
-```
+> 详见离线部署说明：[deploy/OFFLINE-README.md](deploy/OFFLINE-README.md)
 
 ### 数据持久化
 

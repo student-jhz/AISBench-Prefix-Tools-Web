@@ -3,6 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..schemas import DeployStartRequest, RemoteTarCheckRequest
+from ..paths import bundle_dir
 from ..state import AppState
 from .deps import get_state
 
@@ -11,8 +12,8 @@ router = APIRouter(prefix="/deploy", tags=["deploy"])
 
 def _core_code_dir(state: AppState) -> str:
     """内置测试代码目录(随 Web 服务容器分发)"""
-    from pathlib import Path
-    core_code = Path(__file__).resolve().parents[2] / "core_code" / "aisbench_auto_tools_prefix"
+    core_code = (bundle_dir() / "backend" / "core_code" /
+                 "aisbench_auto_tools_prefix")
     if not core_code.is_dir():
         raise HTTPException(500, f"内置测试代码目录缺失: {core_code}")
     return str(core_code)

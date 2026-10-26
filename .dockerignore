@@ -6,6 +6,8 @@ docker-compose.yml
 README.md
 docs/
 tests/
+deploy/
+.github/
 data/
 node_modules/
 .pytest_cache/

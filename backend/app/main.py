@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .logbus import LogBus
+from .paths import bundle_dir, is_frozen
 from .state import AppState
 from .tasks import TaskManager
 from .version import APP_NAME, __version__
@@ -29,14 +30,17 @@ from .routers import (
 
 
 def _base_dir() -> Path:
-    """项目根目录(backend/ 的上级)"""
-    return Path(__file__).resolve().parents[2]
+    """项目根目录(backend/ 的上级); PyInstaller 打包后为解包目录"""
+    return bundle_dir()
 
 
 def _data_dir() -> Path:
     env = os.environ.get("AISBENCH_DATA_DIR")
     if env:
         return Path(env)
+    if is_frozen():
+        # 可执行文件: 数据放在运行目录(而非每次启动都会重建的临时解包目录)
+        return Path.cwd() / "data"
     return _base_dir() / "data"
 
 

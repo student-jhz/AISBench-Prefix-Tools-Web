@@ -36,6 +36,22 @@
 | 实时日志 | WebSocket + 服务端环形缓冲 | 部署/执行日志实时推送，断线重连自动补发历史 |
 | 部署 | Dockerfile + docker-compose | 一键 `docker compose up -d --build` |
 
+### 发布产物（离线部署）
+
+执行机通常位于内网、无法访问外网，因此每次打 `v*` 标签时由
+GitHub Actions（`.github/workflows/release.yml`）自动构建并附加到 Release：
+
+| 产物 | 构建方式 | 适用场景 |
+|------|----------|----------|
+| `aisbench-web-offline_<版本>_linux_<架构>.zip` | `docker build` + `docker save`，含镜像 tar + 离线 compose + deploy.sh | 执行机部署（推荐），`docker load` 后 `docker compose up -d` |
+| `aisbench-prefix-tools-web_<版本>_linux_<架构>.docker.tar.gz` | 同上（裸镜像 tar） | 自行 `docker load` |
+| `aisbench-web_<版本>_linux_<架构>.tar.gz` | PyInstaller onefile（`deploy/aisbench-web.spec`），内置后端+前端+core_code | 服务宿主机无 Docker 的 Linux 机器，SSH 控制执行机 |
+
+架构覆盖 `linux/amd64` 与 `linux/arm64`。PyInstaller 打包形态下
+`app/paths.py` 将资源根切换到 `sys._MEIPASS`（按源码布局打入
+`frontend/` 与 `backend/core_code`），数据目录默认改为**运行目录**下的
+`data/`，避免写入每次启动重建的临时解包目录。
+
 ## 4. 代码结构
 
 ```
