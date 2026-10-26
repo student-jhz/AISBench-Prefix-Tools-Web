@@ -1,0 +1,157 @@
+== 构建环境 ==
++ PYTHON=/opt/python/cp311-cp311/bin/python
++ echo '== 构建环境 =='
++ id
+uid=0(root) gid=0(root) groups=0(root)
++ uname -a
+Linux e43bbd7798cd 6.17.0-1022-azure #22-Ubuntu SMP Mon Jul 27 17:24:03 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
++ ls -1 /opt/python/
+cp310-cp310
+cp311-cp311
+cp312-cp312
+cp313-cp313
+cp314-cp314
+cp314-cp314t
+cp315-cp315
+cp315-cp315t
+cp39-cp39
+pp311-pypy311_pp73
+pp311-pypy311_pp80
+pp312-pypy312_pp80
++ /opt/python/cp311-cp311/bin/python --version
+Python 3.11.17
++ /opt/python/cp311-cp311/bin/python -m pip --version
+pip 26.2.2 from /opt/python/cp311-cp311/lib/python3.11/site-packages/pip (python 3.11)
++ echo '== 安装后端依赖与 PyInstaller =='
++ /opt/python/cp311-cp311/bin/python -m pip install --no-cache-dir --disable-pip-version-check -r backend/requirements.txt pyinstaller
+== 安装后端依赖与 PyInstaller ==
+Collecting pyinstaller
+  Downloading pyinstaller-6.22.3-py3-none-manylinux2014_x86_64.whl.metadata (8.5 kB)
+Collecting fastapi>=0.110 (from -r backend/requirements.txt (line 1))
+  Downloading fastapi-0.162.0-py3-none-any.whl.metadata (26 kB)
+Collecting uvicorn>=0.29 (from uvicorn[standard]>=0.29->-r backend/requirements.txt (line 2))
+  Downloading uvicorn-0.54.0-py3-none-any.whl.metadata (6.6 kB)
+Collecting paramiko>=3.0.0 (from -r backend/requirements.txt (line 3))
+  Downloading paramiko-5.1.0-py3-none-any.whl.metadata (3.8 kB)
+Collecting python-multipart>=0.0.9 (from -r backend/requirements.txt (line 4))
+  Downloading python_multipart-0.0.32-py3-none-any.whl.metadata (2.1 kB)
+Collecting altgraph (from pyinstaller)
+  Downloading altgraph-0.17.5-py2.py3-none-any.whl.metadata (7.5 kB)
+Requirement already satisfied: packaging>=22.0 in /opt/python/cp311-cp311/lib/python3.11/site-packages (from pyinstaller) (26.3)
+Collecting pyinstaller-hooks-contrib>=2026.7 (from pyinstaller)
+  Downloading pyinstaller_hooks_contrib-2026.9-py3-none-any.whl.metadata (16 kB)
+Collecting setuptools>=42.0.0 (from pyinstaller)
+  Downloading setuptools-84.2.1-py3-none-any.whl.metadata (6.6 kB)
+Collecting starlette>=0.46.0 (from fastapi>=0.110->-r backend/requirements.txt (line 1))
+  Downloading starlette-1.10.0-py3-none-any.whl.metadata (6.6 kB)
+Collecting pydantic>=2.9.0 (from fastapi>=0.110->-r backend/requirements.txt (line 1))
+  Downloading pydantic-2.14.1-py3-none-any.whl.metadata (133 kB)
+Collecting typing-extensions>=4.8.0 (from fastapi>=0.110->-r backend/requirements.txt (line 1))
+  Downloading typing_extensions-4.16.0-py3-none-any.whl.metadata (3.3 kB)
+Collecting typing-inspection>=0.4.2 (from fastapi>=0.110->-r backend/requirements.txt (line 1))
+  Downloading typing_inspection-0.4.4-py3-none-any.whl.metadata (2.6 kB)
+Collecting annotated-doc>=0.0.2 (from fastapi>=0.110->-r backend/requirements.txt (line 1))
+  Downloading annotated_doc-0.0.5-py3-none-any.whl.metadata (6.5 kB)
+Collecting opentelemetry-api>=1.44.0 (from fastapi>=0.110->-r backend/requirements.txt (line 1))
+  Downloading opentelemetry_api-1.45.1-py3-none-any.whl.metadata (1.4 kB)
+Collecting click>=7.0 (from uvicorn>=0.29->uvicorn[standard]>=0.29->-r backend/requirements.txt (line 2))
+  Downloading click-8.5.0-py3-none-any.whl.metadata (2.6 kB)
+Collecting h11>=0.8 (from uvicorn>=0.29->uvicorn[standard]>=0.29->-r backend/requirements.txt (line 2))
+  Downloading h11-0.16.0-py3-none-any.whl.metadata (8.3 kB)
+Collecting bcrypt>=3.2 (from paramiko>=3.0.0->-r backend/requirements.txt (line 3))
+  Downloading bcrypt-5.0.0-cp39-abi3-manylinux_2_28_x86_64.whl.metadata (10 kB)
+Collecting cryptography>=3.3 (from paramiko>=3.0.0->-r backend/requirements.txt (line 3))
+  Downloading cryptography-50.0.2-cp311-abi3-manylinux_2_28_x86_64.whl.metadata (4.4 kB)
+Collecting invoke>=2.0 (from paramiko>=3.0.0->-r backend/requirements.txt (line 3))
+  Downloading invoke-3.0.3-py3-none-any.whl.metadata (3.2 kB)
+Collecting pynacl>=1.5 (from paramiko>=3.0.0->-r backend/requirements.txt (line 3))
+  Downloading pynacl-1.6.2-cp38-abi3-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl.metadata (10.0 kB)
+Collecting cffi>=2.0.0 (from cryptography>=3.3->paramiko>=3.0.0->-r backend/requirements.txt (line 3))
+  Downloading cffi-2.1.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (2.5 kB)
+Collecting pycparser (from cffi>=2.0.0->cryptography>=3.3->paramiko>=3.0.0->-r backend/requirements.txt (line 3))
+  Downloading pycparser-3.12-py3-none-any.whl.metadata (9.7 kB)
+Collecting annotated-types>=0.6.0 (from pydantic>=2.9.0->fastapi>=0.110->-r backend/requirements.txt (line 1))
+  Downloading annotated_types-0.8.0-py3-none-any.whl.metadata (15 kB)
+Collecting pydantic-core==2.50.1 (from pydantic>=2.9.0->fastapi>=0.110->-r backend/requirements.txt (line 1))
+  Downloading pydantic_core-2.50.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (6.5 kB)
+Collecting anyio<5,>=4.0.0 (from starlette>=0.46.0->fastapi>=0.110->-r backend/requirements.txt (line 1))
+  Downloading anyio-4.15.1-py3-none-any.whl.metadata (4.7 kB)
+Collecting idna>=2.8 (from anyio<5,>=4.0.0->starlette>=0.46.0->fastapi>=0.110->-r backend/requirements.txt (line 1))
+  Downloading idna-3.20-py3-none-any.whl.metadata (7.2 kB)
+Collecting httptools>=0.8.0 (from uvicorn[standard]>=0.29->-r backend/requirements.txt (line 2))
+  Downloading httptools-0.9.0-cp311-cp311-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl.metadata (3.5 kB)
+Collecting python-dotenv>=0.13 (from uvicorn[standard]>=0.29->-r backend/requirements.txt (line 2))
+  Downloading python_dotenv-1.2.4-py3-none-any.whl.metadata (29 kB)
+Collecting pyyaml>=5.1 (from uvicorn[standard]>=0.29->-r backend/requirements.txt (line 2))
+  Downloading pyyaml-6.0.3-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.4 kB)
+Collecting uvloop>=0.15.1 (from uvicorn[standard]>=0.29->-r backend/requirements.txt (line 2))
+  Downloading uvloop-0.23.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (5.1 kB)
+Collecting watchfiles>=0.20 (from uvicorn[standard]>=0.29->-r backend/requirements.txt (line 2))
+  Downloading watchfiles-1.3.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.9 kB)
+Collecting websockets>=13.0 (from uvicorn[standard]>=0.29->-r backend/requirements.txt (line 2))
+  Downloading websockets-17.3-cp311-cp311-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl.metadata (6.3 kB)
+Downloading pyinstaller-6.22.3-py3-none-manylinux2014_x86_64.whl (764 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 765.0/765.0 kB 20.5 MB/s  0:00:00
+Downloading fastapi-0.162.0-py3-none-any.whl (148 kB)
+Downloading uvicorn-0.54.0-py3-none-any.whl (87 kB)
+Downloading paramiko-5.1.0-py3-none-any.whl (211 kB)
+Downloading python_multipart-0.0.32-py3-none-any.whl (30 kB)
+Downloading annotated_doc-0.0.5-py3-none-any.whl (5.3 kB)
+Downloading bcrypt-5.0.0-cp39-abi3-manylinux_2_28_x86_64.whl (278 kB)
+Downloading click-8.5.0-py3-none-any.whl (125 kB)
+Downloading cryptography-50.0.2-cp311-abi3-manylinux_2_28_x86_64.whl (4.8 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.8/4.8 MB 97.3 MB/s  0:00:00
+Downloading cffi-2.1.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (217 kB)
+Downloading h11-0.16.0-py3-none-any.whl (37 kB)
+Downloading invoke-3.0.3-py3-none-any.whl (160 kB)
+Downloading opentelemetry_api-1.45.1-py3-none-any.whl (60 kB)
+Downloading pydantic-2.14.1-py3-none-any.whl (488 kB)
+Downloading pydantic_core-2.50.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (2.2 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.2/2.2 MB 607.4 MB/s  0:00:00
+Downloading annotated_types-0.8.0-py3-none-any.whl (13 kB)
+Downloading pyinstaller_hooks_contrib-2026.9-py3-none-any.whl (462 kB)
+Downloading pynacl-1.6.2-cp38-abi3-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl (1.4 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.4/1.4 MB 664.6 MB/s  0:00:00
+Downloading setuptools-84.2.1-py3-none-any.whl (876 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 876.3/876.3 kB 696.9 MB/s  0:00:00
+Downloading starlette-1.10.0-py3-none-any.whl (80 kB)
+Downloading anyio-4.15.1-py3-none-any.whl (132 kB)
+Downloading idna-3.20-py3-none-any.whl (69 kB)
+Downloading typing_extensions-4.16.0-py3-none-any.whl (45 kB)
+Downloading typing_inspection-0.4.4-py3-none-any.whl (14 kB)
+Downloading httptools-0.9.0-cp311-cp311-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (499 kB)
+Downloading python_dotenv-1.2.4-py3-none-any.whl (23 kB)
+Downloading pyyaml-6.0.3-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (806 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 806.6/806.6 kB 1.3 GB/s  0:00:00
+Downloading uvloop-0.23.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (4.0 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.0/4.0 MB 612.6 MB/s  0:00:00
+Downloading watchfiles-1.3.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (458 kB)
+Downloading websockets-17.3-cp311-cp311-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (225 kB)
+Downloading altgraph-0.17.5-py2.py3-none-any.whl (21 kB)
+Downloading pycparser-3.12-py3-none-any.whl (62 kB)
+Installing collected packages: altgraph, websockets, uvloop, typing-extensions, setuptools, pyyaml, python-multipart, python-dotenv, pyinstaller-hooks-contrib, pycparser, invoke, idna, httptools, h11, click, bcrypt, annotated-types, annotated-doc, uvicorn, typing-inspection, pyinstaller, pydantic-core, opentelemetry-api, cffi, anyio, watchfiles, starlette, pynacl, pydantic, cryptography, paramiko, fastapi
+
+Successfully installed altgraph-0.17.5 annotated-doc-0.0.5 annotated-types-0.8.0 anyio-4.15.1 bcrypt-5.0.0 cffi-2.1.1 click-8.5.0 cryptography-50.0.2 fastapi-0.162.0 h11-0.16.0 httptools-0.9.0 idna-3.20 invoke-3.0.3 opentelemetry-api-1.45.1 paramiko-5.1.0 pycparser-3.12 pydantic-2.14.1 pydantic-core-2.50.1 pyinstaller-6.22.3 pyinstaller-hooks-contrib-2026.9 pynacl-1.6.2 python-dotenv-1.2.4 python-multipart-0.0.32 pyyaml-6.0.3 setuptools-84.2.1 starlette-1.10.0 typing-extensions-4.16.0 typing-inspection-0.4.4 uvicorn-0.54.0 uvloop-0.23.0 watchfiles-1.3.0 websockets-17.3
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
++ /opt/python/cp311-cp311/bin/python -m PyInstaller --version
+6.22.3
++ echo '== PyInstaller 打包 =='
++ cd /src
++ /opt/python/cp311-cp311/bin/python -m PyInstaller deploy/aisbench-web.spec --noconfirm --distpath dist --workpath build
+== PyInstaller 打包 ==
+28 INFO: PyInstaller: 6.22.3, contrib hooks: 2026.9
+28 INFO: Python: 3.11.17
+30 INFO: Platform: Linux-6.17.0-1022-azure-x86_64-with-glibc2.28
+30 INFO: Python environment: /opt/python/cp311-cp311
+31 INFO: Module search paths (PYTHONPATH):
+['/src',
+ '/opt/python/cp311-cp311/lib/python311.zip',
+ '/opt/python/cp311-cp311/lib/python3.11',
+ '/opt/python/cp311-cp311/lib/python3.11/lib-dynload',
+ '/opt/python/cp311-cp311/lib/python3.11/site-packages',
+ '/src/backend']
+108 INFO: Appending 'datas' from .spec
+109 INFO: checking Analysis
+109 INFO: Building Analysis because Analysis-00.toc is non existent
+109 INFO: Looking for Python shared library...
+ERROR: Python was built without a shared library, which is required by PyInstaller. If you built Python from source, rebuild it with the `--enable-shared` option.
