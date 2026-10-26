@@ -50,7 +50,8 @@
 │   │   ├── routers/         # API 路由（按模块拆分）
 │   │   │   ├── ssh.py  files.py  deploy.py  config.py
 │   │   │   ├── designer.py  execute.py  results.py
-│   │   │   └── logtools.py  compare.py
+│   │   │   ├── logtools.py  compare.py
+│   │   │   └── system.py    # 健康检查 / 聚合状态 / 环境清理
 │   │   └── core/            # 从桌面版迁移的核心业务模块（无 GUI 依赖）
 │   │       ├── ssh_manager.py      ← 桌面版 ssh_manager.py
 │   │       ├── docker_manager.py   ← 桌面版 docker_manager.py
