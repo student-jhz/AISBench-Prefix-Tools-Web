@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AISBench Prefix Tools - Web</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧰</text></svg>">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-brand">
+      <span class="logo">🧰</span>
+      <div>
+        <div class="brand-title">AISBench Prefix Tools <span class="badge">Web</span></div>
+        <div class="brand-sub">Prefix Cache 性能测试一站式工具</div>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <span id="connStatus" class="status-pill disconnected">● 未连接</span>
+      <span id="appVersion" class="version"></span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-section">测试向导</div>
+      <nav class="nav-item" data-view="step1"><span class="nav-num">1</span><span class="nav-label">SSH 连接</span></nav>
+      <nav class="nav-item" data-view="step2"><span class="nav-num">2</span><span class="nav-label">文件与模型</span></nav>
+      <nav class="nav-item" data-view="step3"><span class="nav-num">3</span><span class="nav-label">Docker 部署</span></nav>
+      <nav class="nav-item" data-view="step4"><span class="nav-num">4</span><span class="nav-label">配置 config.py</span></nav>
+      <nav class="nav-item" data-view="step5"><span class="nav-num">5</span><span class="nav-label">测试用例设计</span></nav>
+      <nav class="nav-item" data-view="step6"><span class="nav-num">6</span><span class="nav-label">执行测试</span></nav>
+      <div class="sidebar-section">工具</div>
+      <nav class="nav-item" data-view="logtools"><span class="nav-num">📜</span><span class="nav-label">远程日志工具</span></nav>
+      <nav class="nav-item" data-view="compare"><span class="nav-num">📊</span><span class="nav-label">结果对比分析</span></nav>
+      <div class="sidebar-footer">
+        <a href="https://github.com/student-jhz/AISBench-Prefix-Tools-Web" target="_blank" class="link">GitHub ↗</a>
+      </div>
+    </aside>
+
+    <main class="content" id="content">
+      <!-- ============ 步骤 1: SSH 连接 ============ -->
+      <section class="view" id="view-step1">
+        <div class="view-header">
+          <h1>步骤 1: SSH 连接到执行机</h1>
+          <p class="view-desc">输入远程执行机的 SSH 连接信息（服务部署于本机时，可连接宿主机或任意远程机器）</p>
+        </div>
+        <div class="card form-card">
+          <div class="form-grid">
+            <div class="form-item">
+              <label>执行机 IP <em>*</em></label>
+              <input type="text" id="sshHost" placeholder="141.xx.xx.xx">
+            </div>
+            <div class="form-item">
+              <label>SSH 端口</label>
+              <input type="number" id="sshPort" value="22">
+            </div>
+            <div class="form-item">
+              <label>用户名 <em>*</em></label>
+              <input type="text" id="sshUser" value="root">
+            </div>
+            <div class="form-item">
+              <label>密码</label>
+              <div class="input-group">
+                <input type="password" id="sshPassword" placeholder="密码" autocomplete="new-password">
+                <button class="btn btn-ghost btn-sm" id="sshPwToggle" type="button" title="显示/隐藏">👁</button>
+              </div>
+            </div>
+            <div class="form-item span-2">
+              <label>或密钥文件（.pem / id_rsa）</label>
+              <div class="input-group">
+                <input type="text" id="sshKeyName" class="readonly-input" readonly placeholder="未选择密钥文件">
+                <button class="btn btn-ghost btn-sm" id="sshKeyPick" type="button">选择文件</button>
+              </div>
+              <input type="file" id="sshKeyFile" accept=".pem,.key,id_rsa*,*ed25519*" hidden>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn btn-primary" id="sshConnectBtn">测试连接</button>
+            <button class="btn btn-outline" id="sshDisconnectBtn" disabled>断开连接</button>
+            <span id="sshConnMsg" class="inline-msg"></span>
+          </div>
+        </div>
+        <div class="card tips-card">
+          <div class="tips-title">💡 提示</div>
+          <ul>
+            <li>容器化部署本服务时，连接宿主机可用 <code>host.docker.internal</code>（compose 已配置）或宿主机 IP。</li>
+            <li>密码仅用于本次连接，不会随测试结果保存。</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ============ 步骤 2: 文件与模型 ============ -->
+      <section class="view" id="view-step2">
+        <div class="view-header">
+          <h1>步骤 2: 选择文件与模型</h1>
+          <p class="view-desc">选择 AISBench 镜像 tar 包与模型路径，测试代码可选内置或 zip 包</p>
+        </div>
+
+        <div class="card">
+          <div class="card-title">AISBench 镜像 tar 包</div>
+          <div class="radio-row">
+            <label class="radio"><input type="radio" name="imageSource" value="upload" checked>上传 tar 包</label>
+            <label class="radio"><input type="radio" name="imageSource" value="remote">执行机上已有 tar 包</label>
+            <a class="link" href="https://github.com/AISBench/benchmark/releases" target="_blank">镜像下载链接 ↗</a>
+          </div>
+          <div id="imageUploadBox">
+            <div class="upload-area" id="imageDropArea">
+              <div class="upload-icon">📦</div>
+              <div class="upload-text">点击选择或拖拽镜像 tar 包到此处</div>
+              <div class="upload-hint">上传时自动读取 manifest.json 识别镜像名</div>
+              <input type="file" id="imageFileInput" accept=".tar,.tar.gz,.tgz" hidden>
+            </div>
+            <div class="upload-progress" id="imageUploadProgress" hidden>
+              <div class="progress-bar"><div class="progress-fill" id="imageProgressBar"></div></div>
+              <div class="progress-text" id="imageProgressText"></div>
+            </div>
+            <div class="upload-result" id="imageUploadResult" hidden></div>
+          </div>
+          <div id="imageRemoteBox" hidden>
+            <div class="input-group">
+              <input type="text" id="imageRemotePath" placeholder="/tmp/aisbench_image.tar">
+              <button class="btn btn-outline btn-sm" id="imageRemoteCheckBtn">检查</button>
+            </div>
+            <div class="inline-msg" id="imageRemoteMsg"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">测试代码来源</div>
+          <div class="radio-row">
+            <label class="radio"><input type="radio" name="codeSource" value="builtin" checked>程序内置</label>
+            <label class="radio"><input type="radio" name="codeSource" value="zip">上传 zip 包</label>
+            <a class="link" href="https://github.com/rayn-zzz/aisbench_auto_tools_prefix" target="_blank">代码下载链接 ↗</a>
+          </div>
+          <div id="codeBuiltinBox" class="hint-text">
+            ✅ 使用内置 <code>aisbench_auto_tools_prefix</code> 代码（随服务分发，部署时自动上传）
+          </div>
+          <div id="codeZipBox" hidden>
+            <div class="upload-area small" id="codeDropArea">
+              <div class="upload-icon">🗂</div>
+              <div class="upload-text">点击选择或拖拽代码 zip 包</div>
+              <input type="file" id="codeFileInput" accept=".zip" hidden>
+            </div>
+            <div class="upload-result" id="codeUploadResult" hidden></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">模型与服务信息</div>
+          <div class="form-grid">
+            <div class="form-item span-2">
+              <label>模型权重路径（执行机上）<em>*</em></label>
+              <div class="input-group">
+                <input type="text" id="modelPath" placeholder="/mnt/models/DeepSeek-V4-Flash">
+                <button class="btn btn-outline btn-sm" id="modelBrowseBtn">浏览远程目录</button>
+              </div>
+            </div>
+            <div class="form-item">
+              <label>模型名称（--served-model-name）</label>
+              <input type="text" id="modelName" value="ds">
+            </div>
+            <div class="form-item">
+              <label>vLLM 服务 IP</label>
+              <input type="text" id="vllmIp" placeholder="自动填充执行机 IP">
+            </div>
+            <div class="form-item">
+              <label>vLLM 服务端口</label>
+              <input type="text" id="vllmPort" value="8000">
+            </div>
+            <div class="form-item">
+              <label>API Key（鉴权，可选）</label>
+              <input type="text" id="apiKey" placeholder="未开启鉴权则留空">
+            </div>
+          </div>
+        </div>
+        <div class="view-footer-nav">
+          <span></span>
+          <button class="btn btn-primary nav-next" data-next="step3">下一步：Docker 部署 →</button>
+        </div>
+      </section>
+
+      <!-- ============ 步骤 3: Docker 部署 ============ -->
+      <section class="view" id="view-step3">
+        <div class="view-header">
+          <h1>步骤 3: Docker 部署</h1>
+          <p class="view-desc">检查 Docker 环境 → 上传/加载镜像 → 上传代码 → 创建并启动容器（全程实时日志）</p>
+        </div>
+        <div class="card">
+          <div class="form-grid">
+            <div class="form-item span-2">
+              <label>远程工作目录</label>
+              <div class="input-group">
+                <input type="text" id="workDir" value="/tmp/AISBench_Prefix_Tools">
+                <button class="btn btn-outline btn-sm" id="workDirCheckBtn">检查目录</button>
+                <button class="btn btn-outline btn-sm" id="workDirCleanBtn">清理目录</button>
+              </div>
+              <div class="inline-msg" id="workDirMsg"></div>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn btn-primary btn-lg" id="deployStartBtn">🚀 开始部署</button>
+            <button class="btn btn-danger" id="deployCancelBtn" disabled>取消部署</button>
+            <span id="deployPhase" class="inline-msg"></span>
+          </div>
+        </div>
+        <div class="card deploy-info-card" id="deployInfoCard" hidden>
+          <div class="card-title">当前部署信息</div>
+          <div class="info-grid" id="deployInfoGrid"></div>
+        </div>
+        <div class="card log-card">
+          <div class="card-title-row">
+            <div class="card-title">部署日志</div>
+            <button class="btn btn-ghost btn-sm" id="deployLogClearBtn">清空</button>
+          </div>
+          <pre class="log-console" id="deployLogConsole" channel="deploy"></pre>
+        </div>
+        <div class="view-footer-nav">
+          <button class="btn btn-outline nav-prev" data-prev="step2">← 上一步</button>
+          <button class="btn btn-primary nav-next" data-next="step4">下一步：配置 config.py →</button>
+        </div>
+      </section>
+
+      <!-- ============ 步骤 4: 配置 config.py ============ -->
+      <section class="view" id="view-step4">
+        <div class="view-header">
+          <h1>步骤 4: 配置 config.py</h1>
+          <p class="view-desc">配置 aisbench_auto_tools_prefix 的测试参数并写入容器，支持回读校验</p>
+        </div>
+        <div class="config-layout">
+          <div class="card config-form-card">
+            <div class="form-grid">
+              <div class="form-item span-2">
+                <label>DATASET_PATH（数据集路径）</label>
+                <input type="text" id="cfgDatasetPath" placeholder="部署后自动填充">
+              </div>
+              <div class="form-item">
+                <label>WORK_PATH（aisbench 工作路径）</label>
+                <input type="text" id="cfgWorkPath" value="/benchmark">
+              </div>
+              <div class="form-item">
+                <label>MODEL_NAME（模型名称）<em>*</em></label>
+                <input type="text" id="cfgModelName" value="ds">
+              </div>
+              <div class="form-item span-2">
+                <label>MODEL_PATH（模型权重路径）<em>*</em></label>
+                <input type="text" id="cfgModelPath" placeholder="/mnt/models/...">
+              </div>
+              <div class="form-item">
+                <label>HOST_IP（vLLM 服务 IP）<em>*</em></label>
+                <input type="text" id="cfgHostIp">
+              </div>
+              <div class="form-item">
+                <label>HOST_PORT（vLLM 服务端口）<em>*</em></label>
+                <input type="text" id="cfgHostPort" value="8000">
+              </div>
+              <div class="form-item">
+                <label>API_KEY（鉴权令牌）</label>
+                <input type="text" id="cfgApiKey" placeholder="未开启鉴权则留空">
+              </div>
+              <div class="form-item">
+                <label>DEFAULT_PERFORMANCE_TEST</label>
+                <select id="cfgDefaultPerf">
+                  <option value="default_perf">default_perf（默认）</option>
+                  <option value="stable_stage">stable_stage（稳态测试）</option>
+                </select>
+              </div>
+              <div class="form-item span-2">
+                <label>OUTPUT_DIR（日志输出路径）</label>
+                <input type="text" id="cfgOutputDir" value="./outputs/default">
+              </div>
+              <div class="form-item span-2">
+                <label>POD_INFO（多 DP 场景节点列表，格式 ip:port,ip:port）</label>
+                <input type="text" id="cfgPodInfo" placeholder='例如 141.xx.11:8000,141.xx.12:8000；单机留空'>
+              </div>
+            </div>
+            <div class="form-actions">
+              <button class="btn btn-primary" id="configSaveBtn">💾 保存配置到容器</button>
+              <button class="btn btn-outline" id="configVerifyBtn">✓ 验证配置（回读）</button>
+              <button class="btn btn-outline" id="configReadBtn">↺ 读取容器当前配置</button>
+            </div>
+            <div class="inline-msg" id="configStatusMsg"></div>
+            <div class="config-path-label" id="configPathLabel"></div>
+          </div>
+          <div class="card config-preview-card">
+            <div class="card-title">config.py 预览</div>
+            <pre class="code-preview" id="configPreview"></pre>
+          </div>
+        </div>
+        <div class="view-footer-nav">
+          <button class="btn btn-outline nav-prev" data-prev="step3">← 上一步</button>
+          <button class="btn btn-primary nav-next" data-next="step5">下一步：测试用例设计 →</button>
+        </div>
+      </section>
+
+      <!-- ============ 步骤 5: 测试用例设计 ============ -->
+      <section class="view" id="view-step5">
+        <div class="view-header">
+          <h1>步骤 5: 设计测试用例</h1>
+          <p class="view-desc">根据 KV cache 信息生成测试参数，支持用例增删改与系数调整</p>
+        </div>
+        <div class="card">
+          <div class="card-title">KV Cache 信息</div>
+          <div class="form-grid cols-5">
+            <div class="form-item">
+              <label>单个DP组KV cache (tokens)<em>*</em></label>
+              <input type="number" id="kvCache" placeholder="198469">
+            </div>
+            <div class="form-item">
+              <label>DP组数</label>
+              <input type="number" id="kvDp" value="1" min="1">
+            </div>
+            <div class="form-item">
+              <label>模型最大上下文 (tokens)<em>*</em></label>
+              <input type="number" id="kvMaxLen" placeholder="32768">
+            </div>
+            <div class="form-item">
+              <label>前缀命中率 (0-1)</label>
+              <input type="number" id="kvRepeatRate" value="0.9" step="0.05" min="0" max="1">
+            </div>
+            <div class="form-item">
+              <label>请求发送速率 (0=Burst)</label>
+              <input type="number" id="kvRequestRate" value="0" step="0.1" min="0">
+            </div>
+          </div>
+          <div class="kv-grep-box">
+            <div class="kv-grep-label">查询方式：</div>
+            <div class="kv-grep-main">
+              <div class="input-group">
+                <input type="text" id="kvGrepCmd" class="readonly-input" readonly>
+                <button class="btn btn-primary btn-sm" id="kvGrepCopyBtn">复制</button>
+              </div>
+              <div class="kv-grep-actions">
+                <button class="btn btn-outline btn-sm" id="openLogToolsBtn">📜 从日志自动获取 / 查看日志</button>
+                <span class="hint-text">筛选结果可一键填入参数；GPU KV cache size → 单DP组KV；Maximum concurrency → 最大上下文</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">输入 / 输出长度</div>
+          <div class="length-row">
+            <div class="length-group">
+              <div class="length-label">输入长度（需小于模型最大上下文）</div>
+              <div class="checkbox-row" id="inputLengthChecks"></div>
+            </div>
+            <div class="length-group">
+              <div class="length-label">输出长度</div>
+              <div class="checkbox-row" id="outputLengthChecks"></div>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn btn-primary" id="generateCasesBtn">⚙️ 生成测试用例</button>
+            <span class="hint-text">未勾选时自动选用有效预设的前两项 / 默认 [512, 1024]</span>
+          </div>
+          <div class="warning-banner" id="skippedWarning" hidden></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title-row">
+            <div class="card-title">测试用例（Input / Output / 请求数 / 并发数 可编辑）</div>
+            <div class="cases-actions">
+              <button class="btn btn-outline btn-sm" id="addCaseBtn">＋ 添加用例</button>
+              <button class="btn btn-outline btn-sm" id="dupCaseBtn">⧉ 复制选中</button>
+              <button class="btn btn-outline btn-sm" id="delCaseBtn">🗑 删除选中</button>
+            </div>
+          </div>
+          <div class="adjust-row">
+            <span class="adjust-label">请求数系数：</span>
+            <button class="btn btn-ghost btn-sm adj-data" data-factor="0.5">×0.5</button>
+            <button class="btn btn-ghost btn-sm adj-data" data-factor="2">×2</button>
+            <span class="adjust-sep"></span>
+            <span class="adjust-label">并发数系数：</span>
+            <button class="btn btn-ghost btn-sm adj-conc" data-factor="0.5">×0.5</button>
+            <button class="btn btn-ghost btn-sm adj-conc" data-factor="2">×2</button>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table" id="casesTable">
+              <thead>
+                <tr>
+                  <th style="width:36px"></th>
+                  <th>#</th>
+                  <th>Input</th><th>Output</th>
+                  <th>请求数(推荐)</th><th>请求数(最小)</th>
+                  <th>并发数</th><th>KV使用率</th>
+                </tr>
+              </thead>
+              <tbody id="casesTableBody">
+                <tr class="empty-row"><td colspan="8">点击「生成测试用例」后显示</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="below-min-banner" id="belowMinBanner" hidden></div>
+        </div>
+
+        <div class="two-col">
+          <div class="card">
+            <div class="card-title">计算明细（代入当前 KV 参数）</div>
+            <pre class="calc-details" id="calcDetails">(点击"生成测试用例"后显示详细计算过程)</pre>
+          </div>
+          <div class="card">
+            <div class="card-title">测试摘要</div>
+            <pre class="calc-details" id="testSummary">(尚未生成)</pre>
+            <div class="formulas">
+              <div class="formulas-title">计算公式</div>
+              <div class="formula">并发数 = floor( total_kv_cache / (input_len + output_len) )</div>
+              <div class="formula">最小请求数 = floor(total_kv_cache / input_len / repeat_rate) + 1</div>
+              <div class="formula">推荐请求数 = 最小请求数 × 2</div>
+              <div class="formula">KV使用率 = 并发数 × (input_len + output_len) / total_kv_cache × 100%</div>
+            </div>
+          </div>
+        </div>
+        <div class="view-footer-nav">
+          <button class="btn btn-outline nav-prev" data-prev="step4">← 上一步</button>
+          <button class="btn btn-primary nav-next" data-next="step6">下一步：执行测试 →</button>
+        </div>
+      </section>
+
+      <!-- ============ 步骤 6: 执行测试 ============ -->
+      <section class="view" id="view-step6">
+        <div class="view-header">
+          <h1>步骤 6: 执行测试</h1>
+          <p class="view-desc">生成 .sh 脚本 → 容器内执行 → 下载日志 → 解析结果 CSV</p>
+        </div>
+        <div class="card">
+          <div class="card-title-row">
+            <div class="card-title">测试摘要与命令预览</div>
+            <button class="btn btn-outline btn-sm" id="refreshCommandsBtn">↻ 刷新命令</button>
+          </div>
+          <pre class="calc-details" id="execSummary">(尚未生成测试用例)</pre>
+          <pre class="commands-preview" id="commandsPreview"></pre>
+        </div>
+        <div class="card">
+          <div class="form-actions">
+            <div class="input-group run-name-group">
+              <span class="input-prefix">运行名称</span>
+              <input type="text" id="runName" placeholder="可选，用于结果历史标识">
+            </div>
+            <button class="btn btn-primary btn-lg" id="executeStartBtn">▶️ 执行测试 → 生成CSV</button>
+            <button class="btn btn-danger" id="executeCancelBtn" disabled>取消执行</button>
+            <button class="btn btn-outline" id="cleanupBtn">🧹 清理环境</button>
+            <span id="executePhase" class="inline-msg"></span>
+          </div>
+        </div>
+        <div class="card log-card">
+          <div class="card-title-row">
+            <div class="card-title">执行日志</div>
+            <button class="btn btn-ghost btn-sm" id="execLogClearBtn">清空</button>
+          </div>
+          <pre class="log-console" id="execLogConsole" channel="exec"></pre>
+        </div>
+        <div class="card" id="resultsCard" hidden>
+          <div class="card-title-row">
+            <div class="card-title">结果摘要</div>
+            <div class="cases-actions" id="resultActions"></div>
+          </div>
+          <div class="inline-msg" id="resultsInfo"></div>
+          <div class="table-wrap">
+            <table class="data-table" id="resultsTable">
+              <thead>
+                <tr>
+                  <th>Input</th><th>Output</th><th>请求数</th><th>并发</th><th>实际并发</th>
+                  <th>输入吞吐</th><th>输出吞吐</th><th>TTFT平均</th><th>TPOT平均</th>
+                  <th>QPS</th><th>HBM命中</th><th>外部命中</th>
+                </tr>
+              </thead>
+              <tbody id="resultsTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title-row">
+            <div class="card-title">结果历史</div>
+            <button class="btn btn-ghost btn-sm" id="refreshRunsBtn">↻ 刷新</button>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table" id="runsTable">
+              <thead><tr><th>Run ID</th><th>时间</th><th>文件数</th><th>CSV</th><th>操作</th></tr></thead>
+              <tbody id="runsTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="view-footer-nav">
+          <button class="btn btn-outline nav-prev" data-prev="step5">← 上一步</button>
+          <span></span>
+        </div>
+      </section>
+
+      <!-- ============ 远程日志工具 ============ -->
+      <section class="view" id="view-logtools">
+        <div class="view-header">
+          <h1>远程日志工具</h1>
+          <p class="view-desc">从宿主机 / 容器 / docker logs 中筛选 KV cache 信息（一键填入步骤 5）或查看日志内容</p>
+        </div>
+        <div class="logtools-layout">
+          <div class="card logtools-left">
+            <div class="card-title">服务器</div>
+            <div class="radio-row">
+              <label class="radio"><input type="radio" name="ltServer" value="session" checked>当前执行机</label>
+              <label class="radio"><input type="radio" name="ltServer" value="other">其他服务器</label>
+            </div>
+            <div id="ltOtherServerBox" hidden>
+              <div class="form-grid">
+                <div class="form-item"><label>IP</label><input type="text" id="ltHost"></div>
+                <div class="form-item"><label>端口</label><input type="number" id="ltPort" value="22"></div>
+                <div class="form-item"><label>用户名</label><input type="text" id="ltUser" value="root"></div>
+                <div class="form-item"><label>密码</label><input type="password" id="ltPassword"></div>
+              </div>
+              <div class="form-actions">
+                <button class="btn btn-primary btn-sm" id="ltConnectBtn">连接</button>
+                <button class="btn btn-outline btn-sm" id="ltDisconnectBtn">断开</button>
+                <span class="inline-msg" id="ltConnMsg"></span>
+              </div>
+            </div>
+            <div class="inline-msg" id="ltSessionStatus"></div>
+
+            <div class="card-title mt">日志来源</div>
+            <div class="radio-row">
+              <label class="radio"><input type="radio" name="ltMode" value="host" checked>宿主机文件</label>
+              <label class="radio"><input type="radio" name="ltMode" value="container">容器内文件</label>
+              <label class="radio"><input type="radio" name="ltMode" value="docker_logs">容器 stdout</label>
+            </div>
+            <div id="ltContainerBox" hidden>
+              <div class="form-item">
+                <label>容器</label>
+                <div class="input-group">
+                  <select id="ltContainerSelect"></select>
+                  <button class="btn btn-outline btn-sm" id="ltRefreshContainersBtn">↻</button>
+                </div>
+              </div>
+            </div>
+            <div id="ltFileBrowserBox">
+              <div class="form-item">
+                <label>路径</label>
+                <div class="input-group">
+                  <input type="text" id="ltPath" value="/">
+                  <button class="btn btn-outline btn-sm" id="ltGotoBtn">前往</button>
+                </div>
+              </div>
+              <div class="file-list" id="ltFileList">
+                <div class="file-list-empty">点击「前往」加载目录</div>
+              </div>
+              <div class="inline-msg" id="ltFileMsg"></div>
+            </div>
+
+            <div class="form-actions mt">
+              <button class="btn btn-primary" id="ltGrepBtn">🔍 筛选 KV cache</button>
+              <button class="btn btn-outline" id="ltViewBtn">👁 查看日志</button>
+            </div>
+            <div class="command-display" id="ltCommandDisplay" hidden></div>
+          </div>
+          <div class="card logtools-right">
+            <div class="card-title-row">
+              <div class="card-title">筛选结果</div>
+              <button class="btn btn-primary btn-sm" id="ltFillBtn" disabled>⤵ 填入步骤 5 参数</button>
+            </div>
+            <div class="parsed-values" id="ltParsedValues"></div>
+            <pre class="grep-result" id="ltGrepResult">(点击「筛选 KV cache」后显示)</pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 结果对比分析 ============ -->
+      <section class="view" id="view-compare">
+        <div class="view-header">
+          <h1>结果对比分析</h1>
+          <p class="view-desc">加载两份测试结果 CSV（上传或结果历史），按用例匹配并对比指标差异</p>
+        </div>
+        <div class="card">
+          <div class="compare-sources">
+            <div class="compare-source">
+              <div class="compare-source-title">基准 A</div>
+              <div class="input-group">
+                <select id="cmpTypeA" class="cmp-type">
+                  <option value="result">结果历史</option>
+                  <option value="upload">上传 CSV</option>
+                </select>
+                <select id="cmpFileA" class="cmp-file"></select>
+                <button class="btn btn-outline btn-sm cmp-pick" data-side="A" hidden>选择文件</button>
+                <input type="file" id="cmpUploadA" accept=".csv" hidden>
+              </div>
+            </div>
+            <div class="compare-vs">VS</div>
+            <div class="compare-source">
+              <div class="compare-source-title">对比 B</div>
+              <div class="input-group">
+                <select id="cmpTypeB" class="cmp-type">
+                  <option value="result">结果历史</option>
+                  <option value="upload">上传 CSV</option>
+                </select>
+                <select id="cmpFileB" class="cmp-file"></select>
+                <button class="btn btn-outline btn-sm cmp-pick" data-side="B" hidden>选择文件</button>
+                <input type="file" id="cmpUploadB" accept=".csv" hidden>
+              </div>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn btn-primary" id="cmpLoadBtn">📂 加载并匹配</button>
+            <span class="inline-msg" id="cmpLoadMsg"></span>
+          </div>
+        </div>
+
+        <div class="card" id="cmpMatchCard" hidden>
+          <div class="card-title-row">
+            <div class="card-title">匹配用例</div>
+            <label class="checkbox-inline"><input type="checkbox" id="cmpAllMatches" checked> 全选</label>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table" id="cmpMatchTable">
+              <thead><tr><th></th><th>用例(A)</th><th>用例(B)</th><th>请求数 A/B</th><th>Max_CC A/B</th><th>匹配方式</th></tr></thead>
+              <tbody id="cmpMatchTableBody"></tbody>
+            </table>
+          </div>
+          <div class="card-title mt">对比指标</div>
+          <div class="metrics-groups" id="cmpMetricsGroups"></div>
+          <div class="form-actions">
+            <button class="btn btn-primary" id="cmpComputeBtn">📊 开始对比</button>
+            <button class="btn btn-outline" id="cmpExportBtn" disabled>⬇ 导出 CSV</button>
+          </div>
+        </div>
+
+        <div id="cmpResults"></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- 全局弹层 -->
+  <div id="toastContainer" class="toast-container"></div>
+  <div id="modalRoot"></div>
+
+  <script type="module" src="/static/js/main.js"></script>
+</body>
+</html>
