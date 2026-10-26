@@ -21,11 +21,7 @@ export const G = {
   // 步骤2 表单数据(跨步骤共享 + localStorage 持久化)
   form: loadForm(),
   // 步骤5 设计器状态(前端持有, 执行时提交)
-  designer: {
-    params: null,         // {single_kv_cache, dp, max_request_length, repeat_rate, request_rate}
-    cases: [],            // 当前用例列表
-    summary: "",
-  },
+  designer: loadDesigner(),
 };
 
 
@@ -40,6 +36,43 @@ function loadForm() {
 export function saveForm() {
   try {
     localStorage.setItem("aisbench_form", JSON.stringify(G.form));
+  } catch { /* ignore */ }
+}
+
+
+/* ============ 步骤5 设计器状态持久化 ============ */
+
+function loadDesigner() {
+  try {
+    const d = JSON.parse(localStorage.getItem("aisbench_designer") || "null");
+    if (d && d.params && Array.isArray(d.cases)) {
+      return {
+        params: d.params,                              // KV参数
+        cases: d.cases,                                // 测试用例列表
+        summary: d.summary || "",                      // 摘要文本
+        input_lengths: d.input_lengths || [],          // 勾选的输入长度
+        output_lengths: d.output_lengths || [],        // 勾选的输出长度
+      };
+    }
+  } catch { /* ignore */ }
+  return {
+    params: null,         // {single_kv_cache, dp, max_request_length, repeat_rate, request_rate}
+    cases: [],            // 当前用例列表
+    summary: "",
+    input_lengths: [],
+    output_lengths: [],
+  };
+}
+
+export function saveDesigner() {
+  try {
+    localStorage.setItem("aisbench_designer", JSON.stringify({
+      params: G.designer.params,
+      cases: G.designer.cases,
+      summary: G.designer.summary,
+      input_lengths: G.designer.input_lengths,
+      output_lengths: G.designer.output_lengths,
+    }));
   } catch { /* ignore */ }
 }
 

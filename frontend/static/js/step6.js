@@ -27,6 +27,8 @@ export function initStep6() {
     await pollExecuteStatus();
   };
   window.refreshRuns = refreshRuns;
+  // 页面刷新后恢复显示最近一次测试结果(与上游桌面版"结果摘要"面板一致)
+  restoreLastResult();
 }
 
 
@@ -150,6 +152,16 @@ async function pollExecuteStatus() {
 }
 
 
+async function restoreLastResult() {
+  try {
+    const st = await api.get("/api/execute/status", { silent: true });
+    if (!st.running && st.result?.run_id && st.result.rows?.length) {
+      showResult(st.result);
+    }
+  } catch { /* ignore */ }
+}
+
+
 function updateExecuteTaskUI(tasks) {
   const t = tasks?.execute;
   const running = !!t?.running;
@@ -186,7 +198,7 @@ function showResult(result) {
   const card = $("#resultsCard");
   card.hidden = false;
   $("#resultsInfo").textContent =
-    `Run: ${result.run_id}  |  日志目录: ${result.log_dir_name}  |  ` +
+    `Run: ${result.run_id}  |  日志目录: ${result.log_dir_name || "-"}  |  ` +
     `CSV: ${result.csv_file || "(无)"}  |  结果行数: ${result.row_count ?? 0}`;
 
   // 下载按钮
@@ -225,6 +237,24 @@ function showResult(result) {
 }
 
 
+/** 从结果历史查看某次run的详细结果表 */
+async function viewRun(run) {
+  try {
+    const data = await api.get(
+      `/api/results/${encodeURIComponent(run.run_id)}`, { silent: true });
+    showResult({
+      run_id: data.run_id,
+      csv_file: data.csv_file,
+      rows: data.rows || [],
+      row_count: (data.rows || []).length,
+    });
+    $("#resultsCard").scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (err) {
+    toast(err.message, "error", 6000);
+  }
+}
+
+
 /* ============ 结果历史 ============ */
 
 async function refreshRuns() {
@@ -257,6 +287,13 @@ async function refreshRuns() {
 
 function runActions(run) {
   const box = el("div", { class: "cases-actions" });
+  if (run.csv_files.length) {
+    box.append(el("button", {
+      class: "btn btn-ghost btn-sm",
+      title: "查看结果表",
+      onclick: () => viewRun(run),
+    }, "👁"));
+  }
   if (run.csv_files.length) {
     box.append(el("button", {
       class: "btn btn-ghost btn-sm",

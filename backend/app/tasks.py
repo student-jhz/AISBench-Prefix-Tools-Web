@@ -262,6 +262,8 @@ class TaskManager:
             work_dir=work_dir,
             deployed_at=datetime.now().isoformat(timespec="seconds"),
         )
+        # 持久化部署信息: 服务重启自动重连后可恢复(容器状态以实际检查为准)
+        state.save_session(deploy_info=state.deploy_info.to_dict())
         task.result = state.deploy_info.to_dict()
 
     # ------------------------------------------------------------ 执行测试

@@ -2,7 +2,7 @@
 
 import { $, $$, el, fmtLen, toast, modal, copyText } from "./util.js";
 import { api } from "./api.js";
-import { G } from "./main.js";
+import { G, saveDesigner } from "./main.js";
 
 
 let presets = { input_lengths: [], output_lengths: [], grep_command: "" };
@@ -38,6 +38,11 @@ async function loadPresets() {
   try {
     presets = await api.get("/api/designer/presets");
     $("#kvGrepCmd").value = presets.grep_command || "";
+    if (G.designer.params && G.designer.cases.length) {
+      // 恢复上次会话的测试用例设计(localStorage持久化)
+      await restoreDesigner();
+      return;
+    }
     // 默认勾选: 输入取前两个有效项, 输出取 512/1024
     const maxLen = Number($("#kvMaxLen").value) || 0;
     const validInputs = presets.input_lengths.filter(l => !maxLen || l < maxLen);
@@ -48,6 +53,34 @@ async function loadPresets() {
   } catch (err) {
     toast(`加载预设失败: ${err.message}`, "error");
   }
+}
+
+
+/** 页面刷新后恢复设计器: 回填表单 + 渲染用例 + 服务端重算派生值 */
+async function restoreDesigner() {
+  const d = G.designer;
+  $("#kvCache").value = d.params.single_kv_cache ?? "";
+  $("#kvDp").value = d.params.dp ?? 1;
+  $("#kvMaxLen").value = d.params.max_request_length ?? "";
+  $("#kvRepeatRate").value = d.params.repeat_rate ?? 0.9;
+  $("#kvRequestRate").value = d.params.request_rate ?? 0;
+  checkedInputs = new Set(d.input_lengths || []);
+  checkedOutputs = new Set(d.output_lengths || []);
+  renderLengthChips();
+  renderCases();
+  $("#testSummary").textContent = d.summary || "(尚未生成)";
+  toast("已恢复上次设计的测试用例", "info");
+  // 服务端重算派生值并恢复计算明细(失败则沿用本地数据)
+  try {
+    const data = await api.post("/api/designer/cases",
+      { ...d.params, cases: d.cases }, { silent: true });
+    G.designer.cases = data.cases;
+    G.designer.summary = data.summary;
+    renderCases();
+    $("#calcDetails").textContent = data.calc_details;
+    $("#testSummary").textContent = data.summary;
+    saveDesigner();
+  } catch { /* ignore */ }
 }
 
 
@@ -73,11 +106,20 @@ function renderChips(container, values, checkedSet, isDisabled) {
     checkbox.addEventListener("change", () => {
       if (checkbox.checked) checkedSet.add(value);
       else checkedSet.delete(value);
+      persistChecked();
     });
     container.append(el("label",
       { class: `check-chip${disabled ? " disabled" : ""}` },
       checkbox, el("span", {}, fmtLen(value))));
   }
+}
+
+
+/** 将当前勾选的输入/输出长度同步到持久化状态 */
+function persistChecked() {
+  G.designer.input_lengths = [...checkedInputs];
+  G.designer.output_lengths = [...checkedOutputs];
+  saveDesigner();
 }
 
 
@@ -144,6 +186,9 @@ function applyDesignerResponse(data, params) {
   G.designer.params = params;
   G.designer.cases = data.cases;
   G.designer.summary = data.summary;
+  G.designer.input_lengths = checkedValues("#inputLengthChecks", checkedInputs);
+  G.designer.output_lengths = checkedValues("#outputLengthChecks", checkedOutputs);
+  saveDesigner();
   renderCases();
   $("#calcDetails").textContent = data.calc_details;
   $("#testSummary").textContent = data.summary;
@@ -238,6 +283,7 @@ async function submitCases() {
     });
     G.designer.cases = data.cases;
     G.designer.summary = data.summary;
+    saveDesigner();
     renderCases();
     $("#calcDetails").textContent = data.calc_details;
     $("#testSummary").textContent = data.summary;
@@ -335,7 +381,9 @@ async function deleteSelectedCase() {
   }
   G.designer.cases.splice(idx, 1);
   if (!G.designer.cases.length) {
+    G.designer.params = null;
     renderCases();
+    saveDesigner();
     $("#calcDetails").textContent = "(尚未生成测试用例)";
     $("#testSummary").textContent = "(尚未生成)";
     toast("已删除全部用例", "info");

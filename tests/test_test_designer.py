@@ -127,7 +127,7 @@ class TestCommandsAndScript:
         d.test_cases[0].data_num_recommended = 100
         d.test_cases[0].concurrency_recommended = 20
         cmd = d.generate_commands()[0]
-        assert "python3 aisbench_test.py --prefix_test" in cmd
+        assert "python3 -u aisbench_test.py --prefix_test" in cmd
         assert "--input_len 8192" in cmd
         assert "--output_len 512" in cmd
         assert "--data_num 100" in cmd

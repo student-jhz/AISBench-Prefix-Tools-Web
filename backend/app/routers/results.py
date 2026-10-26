@@ -61,18 +61,22 @@ def list_runs(state: AppState = Depends(get_state)):
 
 @router.get("/{run_id}")
 def run_detail(run_id: str, state: AppState = Depends(get_state)):
-    """run 详情: 文件列表 + 首个CSV解析结果"""
+    """run 详情: 文件列表 + 结果CSV解析结果(优先工具生成的 results_*.csv)"""
     run_dir = _run_dir(state, run_id)
     files = _list_files(run_dir)
 
     rows = []
     csv_file = ""
-    for f in files:
-        if f["name"].endswith(".csv"):
-            csv_file = f["name"]
-            parsed, err = load_result_csv(str(run_dir / f["name"]))
-            if err is None:
-                rows = parsed
+    # 优先本工具解析生成的 results_*.csv(字段与 CSV_FIELDS 一致),
+    # 跳过 test_logs_*/aisbench_result.csv 等基准工具原始输出(列名不同)。
+    candidates = sorted(run_dir.glob("results_*.csv"))
+    candidates += [p for p in sorted(run_dir.rglob("*.csv"))
+                   if p not in candidates]
+    for path in candidates:
+        csv_file = str(path.relative_to(run_dir))
+        parsed, err = load_result_csv(str(path))
+        if err is None:
+            rows = parsed
             break
 
     return {

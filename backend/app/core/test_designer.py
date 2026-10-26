@@ -271,12 +271,17 @@ class TestDesigner:
     # ============================================================
 
     def generate_commands(self) -> List[str]:
-        """生成测试命令 (每次执行生成新的随机种子, 保证数据集可复现且不同轮次不同)"""
+        """生成测试命令 (每次执行生成新的随机种子, 保证数据集可复现且不同轮次不同)
+
+        python3 -u: 强制无缓冲输出。命令输出经 `| tee` 管道写日志文件,
+        若不关闭缓冲, Python 会按块缓冲(4-8KB), 导致执行期间日志长时间
+        无输出、结束时才一次性涌出(v1.0.5 及之前步骤6的现象)。
+        """
         seed = random.randint(1, 999999)
         commands = []
         for case in self.test_cases:
             cmd = (
-                f"python3 aisbench_test.py "
+                f"python3 -u aisbench_test.py "
                 f"--prefix_test "
                 f"--input_len {case.input_len} "
                 f"--output_len {case.output_len} "

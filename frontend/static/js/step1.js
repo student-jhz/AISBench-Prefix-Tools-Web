@@ -21,6 +21,24 @@ export function initStep1() {
     pwEl.type = pwEl.type === "password" ? "text" : "password";
   });
 
+  // 回填上次连接信息(凭据保存在服务端, 服务重启后自动重连)
+  restoreSshForm();
+
+  async function restoreSshForm() {
+    try {
+      const st = await api.get("/api/ssh/status", { silent: true });
+      const r = st.remembered;
+      if (r?.host) {
+        hostEl.value = r.host;
+        if (r.port) portEl.value = r.port;
+        if (r.username) userEl.value = r.username;
+        if (r.has_credential && !st.connected) {
+          setMsg(msgEl, `已保存 ${r.host} 的连接信息, 服务重启后会自动重连`, "muted");
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
   // 密钥选择与上传
   $("#sshKeyPick").addEventListener("click", () => $("#sshKeyFile").click());
   $("#sshKeyFile").addEventListener("change", async e => {

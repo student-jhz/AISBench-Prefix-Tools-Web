@@ -53,6 +53,8 @@ def create_app(ssh_manager=None, data_dir=None, ssh_factory=None) -> FastAPI:
                      ssh_factory=ssh_factory)
     bus = LogBus()
     state.tasks = TaskManager(bus, state)
+    # 恢复上次会话: 后台自动重连SSH并恢复部署信息(如有)
+    state.restore_session()
     app.state.app_state = state
     app.state.logbus = bus
 

@@ -40,6 +40,16 @@ def connect(req: SSHConnectRequest, state: AppState = Depends(get_state)):
     if not ok:
         raise HTTPException(400, msg)
 
+    # 持久化连接参数: 服务重启后自动重连, 页面刷新后表单回填
+    state.save_session(ssh_params={
+        "host": req.host,
+        "port": req.port,
+        "username": req.username,
+        "password": req.password,
+        "key_upload_id": req.key_upload_id,
+        "timeout": req.timeout,
+    })
+
     # 新连接意味着旧的部署信息失效
     state.reset_deploy()
     return {"ok": True, "message": msg, "status": state.ssh_status()}
@@ -51,6 +61,7 @@ def disconnect(state: AppState = Depends(get_state)):
         raise HTTPException(400, "部署/测试任务运行中，无法断开连接")
     state.ssh.disconnect()
     state.reset_deploy()
+    state.clear_session()
     return {"ok": True}
 
 

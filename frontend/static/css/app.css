@@ -451,6 +451,7 @@ code {
 .metrics-groups { display: flex; flex-direction: column; gap: 10px; }
 .metrics-group-title { font-size: 12px; font-weight: 700; color: var(--text-muted); margin-bottom: 4px; }
 .cmp-result-card { margin-bottom: 16px; }
+.cmp-chart-single { margin-top: 14px; }
 .cmp-chart-row {
   display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 14px;
 }

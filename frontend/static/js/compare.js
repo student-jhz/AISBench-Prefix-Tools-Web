@@ -60,15 +60,16 @@ async function refreshSources() {
     uploads = items.filter(i => i.kind === "compare-csv" && !i.error);
   } catch { /* ignore */ }
 
+  // 结果历史按 run 列出, 不再让用户挑选具体文件:
+  // 后端自动选择可对比的 results_*.csv(跳过 test_logs_* 下的原始CSV)
   compareOptions = [];
   for (const run of runs) {
-    for (const file of run.csv_files) {
-      compareOptions.push({
-        type: "result",
-        value: JSON.stringify({ type: "result", run_id: run.run_id, file }),
-        label: `${run.run_id} / ${file}`,
-      });
-    }
+    if (!run.csv_files.length) continue;  // 无CSV的run无法对比
+    compareOptions.push({
+      type: "result",
+      value: JSON.stringify({ type: "result", run_id: run.run_id }),
+      label: `${run.run_id} (${run.csv_files.length}个CSV)`,
+    });
   }
   for (const u of uploads) {
     compareOptions.push({
@@ -107,8 +108,9 @@ function renderSideOptions(side) {
 
 function sourceOf(side) {
   const type = $(`#cmpType${side}`).value;
-  // 选项值为 JSON 字符串: {type:"result",run_id,file} 或 {type:"upload",upload_id}
-  // (与后端 /api/compare/* 的 _resolve_source 期望格式一致)
+  // 选项值为 JSON 字符串: {type:"result",run_id} 或 {type:"upload",upload_id}
+  // (与后端 /api/compare/* 的 _resolve_source 期望格式一致;
+  //  result 不带 file, 由后端自动挑选可对比的结果CSV)
   const parsed = selectValue(`#cmpFile${side}`, type);
   if (!parsed) {
     const label = side === "A" ? "基准 A" : "对比 B";
@@ -323,30 +325,22 @@ function renderMetricCard(table, data) {
           el("th", {}, "用例"), el("th", {}, "A (基准)"),
           el("th", {}, "B (对比)"), el("th", {}, "Δ (B-A, Δ%)"))),
         tbody)),
-    el("div", { class: "cmp-chart-row" },
-      chartBox("基准 A", table, "a"),
-      chartBox("对比 B", table, "b")));
+    // A/B 两组数据画在同一张分组柱状图中, 便于直接对比
+    // (与上游桌面版 BarChartWidget 的展示方式一致)
+    el("div", { class: "chart-box cmp-chart-single" },
+      el("canvas", {})));
 
   // 图表在插入DOM后再绘制(需要布局尺寸)
   requestAnimationFrame(() => {
-    const canvases = card.querySelectorAll("canvas");
+    const canvas = card.querySelector("canvas");
     const labels = table.rows.map(r => r.label);
-    drawBarChart(canvases[0], labels,
-      [{ name: "A", color: SERIES_COLORS.a, values: table.rows.map(r => r.a) }],
-      { unit: table.unit, decimals: table.decimals });
-    drawBarChart(canvases[1], labels,
-      [{ name: "B", color: SERIES_COLORS.b, values: table.rows.map(r => r.b) }],
+    drawBarChart(canvas, labels, [
+      { name: "A", color: SERIES_COLORS.a, values: table.rows.map(r => r.a) },
+      { name: "B", color: SERIES_COLORS.b, values: table.rows.map(r => r.b) },
+    ],
       { unit: table.unit, decimals: table.decimals });
   });
   return card;
-}
-
-
-function chartBox(title, table, side) {
-  return el("div", { class: "chart-box" },
-    el("div", { class: "metrics-group-title" },
-      `${title}${table.unit ? ` (${table.unit})` : ""}`),
-    el("canvas", {}));
 }
 
 

@@ -37,18 +37,26 @@ def _resolve_source(state: AppState, source) -> tuple:
     if not str(run_dir).startswith(str(results)) or not run_dir.is_dir():
         raise HTTPException(400, f"结果目录不存在: {source.run_id}")
 
-    # 指定文件或首个CSV
+    # 指定文件; 未指定时自动选择可对比的结果CSV:
+    # 优先本工具解析生成的 results_*.csv(字段与对比要求完全一致),
+    # 跳过 test_logs_*/aisbench_result.csv 等基准工具原始输出
+    # (其列名格式不同, 如 "TTFT avg"/model_name, 无法直接对比)。
     if source.file:
         target = (run_dir / source.file).resolve()
         if not str(target).startswith(str(run_dir)) or not target.is_file():
             raise HTTPException(400, f"结果文件不存在: {source.file}")
         return str(target), f"{source.run_id}/{source.file}"
 
-    csvs = sorted(run_dir.rglob("*.csv"))
-    if not csvs:
-        raise HTTPException(400, f"结果目录中没有CSV文件: {source.run_id}")
-    rel = csvs[0].relative_to(run_dir)
-    return str(csvs[0]), f"{source.run_id}/{rel}"
+    candidates = sorted(run_dir.glob("results_*.csv"))
+    others = [p for p in sorted(run_dir.rglob("*.csv")) if p not in candidates]
+    for cand in candidates + others:
+        _rows, err = cc.load_result_csv(str(cand))
+        if err is None:
+            rel = cand.relative_to(run_dir)
+            return str(cand), f"{source.run_id}/{rel}"
+    raise HTTPException(
+        400, f"结果目录中没有可对比的结果CSV: {source.run_id} "
+             f"(需要工具生成的 results_*.csv)")
 
 
 def _load_pair(state: AppState, req: CompareLoadRequest):

@@ -1,6 +1,7 @@
 """API 集成测试 - FakeSSH 注入, 覆盖部署→配置→执行→结果→对比全链路"""
 
 import io
+import json
 import time
 import zipfile
 
@@ -60,8 +61,15 @@ class TestSSH:
         data = connect_ssh(c)
         assert data["ok"] is True
         r = c.get("/api/ssh/status")
-        assert r.json() == {"connected": True, "host": "10.0.0.1",
-                            "port": 22, "username": "root"}
+        data = r.json()
+        assert data["connected"] is True
+        assert data["host"] == "10.0.0.1"
+        assert data["port"] == 22
+        assert data["username"] == "root"
+        # remembered: 上次连接参数(供前端表单回填, 不含密码)
+        assert data["remembered"]["host"] == "10.0.0.1"
+        assert data["remembered"]["username"] == "root"
+        assert data["remembered"]["has_credential"] is True
 
     def test_connect_failure(self, client):
         c, _, _ = client
@@ -96,6 +104,47 @@ class TestSSH:
         r = c.post("/api/ssh/disconnect")
         assert r.status_code == 200
         assert ssh.connected is False
+
+    def test_session_persistence(self, client):
+        """SSH连接参数持久化: 刷新/重启后表单可回填, 服务重启自动重连"""
+        c, _, _ = client
+        connect_ssh(c)
+        state = c.app.state.app_state
+        session = state.load_session()
+        assert session["ssh"]["host"] == "10.0.0.1"
+        assert session["ssh"]["username"] == "root"
+        assert session["ssh"]["password"] == "pass"
+
+        # 主动断开后清除持久化会话
+        c.post("/api/ssh/disconnect")
+        assert state.load_session() == {}
+        r = c.get("/api/ssh/status")
+        assert r.json()["remembered"] is None
+
+    def test_session_restore(self, tmp_path):
+        """服务重启后从 session.json 自动重连SSH并恢复部署信息"""
+        (tmp_path / "session.json").write_text(json.dumps({
+            "ssh": {"host": "10.0.0.1", "port": 22, "username": "root",
+                    "password": "pass", "timeout": 10},
+            "deploy": {"container_name": "aisbench-test-x",
+                       "image_name": "img:latest",
+                       "code_host_path": "/tmp/w/code",
+                       "model_path": "/mnt/model",
+                       "work_dir": "/tmp/w",
+                       "deployed_at": "2026-01-01T00:00:00"},
+        }), encoding="utf-8")
+        ssh = FakeSSH()
+        app = create_app(ssh_manager=ssh, data_dir=tmp_path, ssh_factory=FakeSSH)
+        state = app.state.app_state
+        for _ in range(100):  # 等待后台重连线程
+            if ssh.connected:
+                break
+            time.sleep(0.05)
+        assert ssh.connected is True
+        assert ssh.host == "10.0.0.1"
+        assert state.deploy_info is not None
+        assert state.deploy_info.container_name == "aisbench-test-x"
+        assert state.docker.container_name == "aisbench-test-x"
 
 
 class TestUploads:
@@ -228,7 +277,8 @@ class TestDesignerAPI:
         })
         assert r.status_code == 200
         data = r.json()
-        assert data["commands"][0].startswith("python3 aisbench_test.py")
+        # -u: 无缓冲输出, 保证执行日志实时回传
+        assert data["commands"][0].startswith("python3 -u aisbench_test.py")
         assert data["script"].startswith("#!/bin/bash")
         assert data["log_dir_name"].startswith("test_logs_")
 
@@ -277,6 +327,11 @@ class TestDeployFlow:
         # 内置代码已上传到远程
         assert any(p.startswith("/tmp/AISBench_Prefix_Tools/aisbench_auto_tools_prefix-main")
                    for p in ssh.files)
+
+        # 部署信息已持久化(服务重启后可恢复)
+        session = c.app.state.app_state.load_session()
+        assert session["deploy"]["container_name"] == result["container_name"]
+        assert session["deploy"]["model_path"] == "/mnt/models/ds"
 
     def test_deploy_requires_ssh(self, client):
         c, _, _ = client
@@ -601,6 +656,11 @@ class TestCompareAPI:
         row.update({"input_len": 8192, "output_len": 512, "qps": 5.0})
         writer.writerow(row)
         (results_dir / "results_x.csv").write_text(buf.getvalue(), encoding="utf-8")
+        # test_logs_* 下的原始CSV(字段格式不同)不应被自动选中
+        raw_dir = results_dir / "test_logs_20260101_000000"
+        raw_dir.mkdir()
+        (raw_dir / "aisbench_result.csv").write_text(
+            "model_name,current_time,input_len\nmodel,t,8192\n", encoding="utf-8")
 
         id_b = self._upload_csv(c, "6")
         r = c.post("/api/compare/load", json={
@@ -609,6 +669,24 @@ class TestCompareAPI:
         })
         assert r.status_code == 200
         assert len(r.json()["matches"]) == 1
+        assert r.json()["a"]["label"] == "run_test1/results_x.csv"
+
+    def test_compare_result_history_skips_raw_csv(self, client, tmp_path):
+        """run 内只有原始aisbench_result.csv(字段不兼容)时应报明确错误"""
+        c, _, _ = client
+        results_dir = tmp_path / "results" / "run_raw"
+        raw_dir = results_dir / "test_logs_20260101_000000"
+        raw_dir.mkdir(parents=True)
+        (raw_dir / "aisbench_result.csv").write_text(
+            "model_name,current_time,input_len\nmodel,t,8192\n", encoding="utf-8")
+
+        id_b = self._upload_csv(c, "6")
+        r = c.post("/api/compare/load", json={
+            "a": {"type": "result", "run_id": "run_raw"},
+            "b": {"type": "upload", "upload_id": id_b},
+        })
+        assert r.status_code == 400
+        assert "results_" in r.json()["detail"]
 
     def test_compare_missing_source(self, client):
         c, _, _ = client
