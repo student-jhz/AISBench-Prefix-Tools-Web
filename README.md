@@ -75,7 +75,7 @@ chmod +x aisbench-web
 ```
 
 可执行文件已内置后端 + 前端 + 测试代码，无需安装 Python；数据目录默认为运行目录下的 `data/`（可用 `AISBENCH_DATA_DIR` 指定）。
-可执行文件在 manylinux2014（glibc 2.17）环境构建，兼容 CentOS 7 / RHEL 8+ / 麒麟 V10 / openEuler / Ubuntu 20.04+ 等主流发行版。
+可执行文件在 manylinux_2_28（glibc 2.28）环境构建，兼容 RHEL 9+ / 麒麟 V10 / openEuler / Ubuntu 20.04+ 等主流发行版；更老系统（如 CentOS 7 / RHEL 8）请使用 Docker 镜像离线包（镜像自带 Python 运行时，不受宿主机 glibc 限制）。
 
 ### 方式三：源码构建（可访问外网时）
 

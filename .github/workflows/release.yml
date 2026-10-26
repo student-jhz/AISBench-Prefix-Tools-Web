@@ -97,9 +97,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # 在 manylinux2014 (glibc 2.17) 容器内构建, 兼容 CentOS7/RHEL8+/麒麟V10/openEuler
-          - { name: linux_amd64, runner: ubuntu-latest, manylinux: manylinux2014_x86_64 }
-          - { name: linux_arm64, runner: ubuntu-24.04-arm, manylinux: manylinux2014_aarch64 }
+          # 在 manylinux_2_28 (glibc 2.28) 容器内构建。注: manylinux2014 镜像
+          # 已冻结不再更新, 内部 pip 等组件过旧会导致 CI 打包失败。
+          - { name: linux_amd64, runner: ubuntu-latest, manylinux: manylinux_2_28_x86_64 }
+          - { name: linux_arm64, runner: ubuntu-24.04-arm, manylinux: manylinux_2_28_aarch64 }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -117,11 +118,15 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
-      - name: 在 manylinux2014 容器内 PyInstaller 打包
+      - name: 在 manylinux_2_28 容器内 PyInstaller 打包
         run: |
           # glibc 2.17 构建环境 => 产物可运行于任何 glibc >= 2.17 的 Linux
           # (CentOS7 / RHEL8+ / 麒麟V10 / openEuler / Ubuntu20.04+)
           # 注意: venv 与安装必须与打包在同一容器运行内完成(docker run 不保留状态)
+          #       manylinux2014 镜像已冻结且不再更新, 改用受支持的 manylinux_2_28
+          #       (glibc 2.28, 仍远低于 Ubuntu22.04 的 2.35, 兼容 RHEL9+/麒麟V10/
+          #        openEuler22+/Ubuntu20.04+; 更老系统请用 Docker 镜像离线包, 其
+          #        自带 Python 运行时, 不受宿主机 glibc 限制)
           docker run --rm \
             -v "$PWD:/src" -w /src \
             --user "$(id -u):$(id -g)" \
@@ -238,7 +243,7 @@ jobs:
 
           架构选择: 执行机上 `uname -m` 输出 `x86_64` 选 amd64, `aarch64` 选 arm64。
 
-          可执行文件在 manylinux2014 (glibc 2.17) 环境构建, 可直接运行于 CentOS7 / RHEL8+ / 麒麟V10 / openEuler / Ubuntu20.04+ 等主流发行版, 无需安装 Python。
+          可执行文件在 manylinux_2_28 (glibc 2.28) 环境构建, 可直接运行于 RHEL 9+ / 麒麟V10 / openEuler / Ubuntu20.04+ 等主流发行版, 无需安装 Python。更老的系统(如 CentOS 7 / RHEL 8)请改用 Docker 镜像离线包。
 
           源码部署(可访问外网时): `git clone` 后 `docker compose up -d --build`。
 
