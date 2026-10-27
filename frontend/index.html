@@ -13,13 +13,13 @@
   <div id="bootError" class="boot-error" hidden>
     <div class="boot-error-card">
       <div class="boot-error-title">⚠️ 界面加载失败</div>
-      <div class="boot-error-text">
-        前端脚本未能启动。常见原因：<br>
-        ① 后端服务未就绪或正在处理长任务(如镜像加载)——请稍候，页面会自动恢复；<br>
-        ② 浏览器缓存了旧版本脚本——请<strong>强制刷新</strong>(Ctrl+F5 / Cmd+Shift+R)；<br>
-        ③ 后端进程异常——请查看服务日志并重启服务。
+      <!-- 诊断明细: 下方自检脚本动态填写, 直接给出可追溯的失败原因与处置建议 -->
+      <div class="boot-error-text" id="bootErrorReason">正在启动…</div>
+      <div class="boot-error-diag" id="bootErrorDiag"></div>
+      <div class="boot-error-actions">
+        <button class="btn btn-primary" onclick="location.reload()">重新加载页面</button>
+        <button class="btn btn-outline" id="bootErrorForceBtn">强制刷新 (跳过缓存)</button>
       </div>
-      <button class="btn btn-primary" onclick="location.reload()">重新加载页面</button>
     </div>
   </div>
 
@@ -714,31 +714,111 @@
 
   <script type="module" src="/static/js/main.js?v=__APP_VERSION__"></script>
   <script>
-    // ===== 前端启动自检(非 module, 供模块图崩溃时兜底) =====
-    // v2.0.2 重写: 旧版在 4s 时检查一次 ".view.active" 且永不撤销 —— 而 init()
-    // 会先 await /api/state 再渲染首屏, 后端/SSH 稍慢就会永久误报"界面加载失败",
-    // 刷新也无效(每次都再等一遍)。新版判定依据:
-    //   1. main.js 模块顶层设置 window.__appBooted —— 只有模块图真正加载并求值成功;
-    //   2. 首屏已渲染(main.js 已改为先渲染再等状态);
-    // 满足任一即判定启动成功, 并且自动隐藏提示(支持"先误报后启动成功"的恢复)。
-    window.__bootWatchdog = function () {
-      var el = document.getElementById("bootError");
-      if (!el) return;
-      if (window.__appBooted || document.querySelector(".view.active")) {
-        el.hidden = true;
-        return;
+    // ===== 前端启动自检(非 module, 模块图失败时兜底 + 自报失败原因) =====
+    // 判定: window.__appBooted(main.js 模块顶层设置, 任何模块加载/求值失败都到
+    // 不了那里)或首屏已渲染。v2.0.3:
+    //  - 轮询不再在 20s 停止(旧版慢网络下 20s 后启动成功提示也永久残留),
+    //    启动成功即隐藏并停止; 未成功则持续每 5s 复查, 恢复后自动撤销;
+    //  - 收集并显示**具体失败原因**: 404 的脚本 URL / 模块求值异常(文件+行号)
+    //    / 后端健康检查结果 —— 用户不再需要猜测"为什么加载失败"。
+    (function () {
+      var BOOT_TIMEOUT_MS = 3000;      // 首次判定延迟
+      var POLL_MS = 5000;              // 后续复查间隔(直到成功)
+      var reasons = [];                // 收集到的失败原因
+      var booted = false;
+      var start = Date.now();
+
+      function note(msg) {
+        if (reasons.indexOf(msg) < 0) reasons.push(msg);
+        render();
       }
-      el.hidden = false;
-    };
-    // 脚本/CSS 资源加载失败(404/网络断)立即提示, 不必等轮询超时
-    window.addEventListener("error", function (ev) {
-      var tag = ev.target && ev.target.tagName;
-      if (tag === "SCRIPT" || tag === "LINK") window.__bootWatchdog();
-    }, true);
-    // 耐心轮询: 慢网络下模块可能数秒后才就绪; 期间一旦启动成功立即撤下提示
-    [3000, 5000, 8000, 12000, 20000].forEach(function (ms) {
-      setTimeout(window.__bootWatchdog, ms);
-    });
+
+      function pageUrl() {
+        return location.pathname + location.search;
+      }
+
+      // ---- 收集失败原因 ----
+      // 1) 资源加载失败(404/断网): 捕获阶段的 error 事件目标是元素本身
+      window.addEventListener("error", function (ev) {
+        var t = ev.target, tag = t && t.tagName;
+        if (tag === "SCRIPT" || tag === "LINK") {
+          var src = (t.src || t.href || "");
+          var short = src ? src.replace(location.origin, "") : "(未知资源)";
+          note("资源加载失败: " + short + " (HTTP " + (t.status || "404/网络") + ")");
+        } else if (ev.message) {
+          // 2) 模块求值/运行时异常: window.onerror 走到此分支
+          var src2 = (ev.filename || "").replace(location.origin, "");
+          note("脚本异常: " + ev.message + (src2 ? " @ " + src2 + ":" + (ev.lineno || "?") : ""));
+        }
+      }, true);
+      window.addEventListener("unhandledrejection", function (ev) {
+        var r = ev.reason;
+        note("未处理的 Promise 异常: " + (r && r.message ? r.message : String(r)));
+      });
+
+      // 3) 后端健康探测: 区分"后端不可达"与"后端正常但前端脚本失败"
+      var backendState = "探测中…";
+      function probeBackend() {
+        window.fetch("/api/health", { cache: "no-store" }).then(function (r) {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        }).then(function (d) {
+          backendState = "正常 (服务版本 v" + (d && d.version ? d.version : "?") + ")";
+        }).catch(function (e) {
+          backendState = "不可达 (" + (e && e.message ? e.message : "网络错误") + ")";
+        });
+      }
+      probeBackend();
+      setInterval(probeBackend, 10000);
+
+      function render() {
+        var el = document.getElementById("bootError");
+        if (!el || booted) return;
+        var reasonEl = document.getElementById("bootErrorReason");
+        var diagEl = document.getElementById("bootErrorDiag");
+        var waitSec = Math.round((Date.now() - start) / 1000);
+        // 主因文案
+        var main;
+        if (backendState.indexOf("不可达") >= 0) {
+          main = "后端服务不可达 —— 请确认服务进程已启动、端口可访问；";
+        } else if (reasons.length) {
+          main = "前端脚本加载/执行失败(详情见下)；";
+        } else {
+          main = "前端脚本仍在加载(已等待 " + waitSec + " 秒) —— 慢网络下请稍候，" +
+                 "启动成功后本提示会自动消失；";
+        }
+        if (reasonEl) reasonEl.innerHTML = main.replace(/</g, "&lt;");
+        if (diagEl) {
+          var lines = ["后端健康: " + backendState, "页面: " + pageUrl(),
+                       "已等待: " + waitSec + " 秒", "浏览器: " + navigator.userAgent];
+          if (reasons.length) lines = lines.concat(reasons.map(function (s) {
+            return "原因: " + s;
+          }));
+          diagEl.textContent = lines.join("\n");
+        }
+        el.hidden = false;
+      }
+
+      function check() {
+        if (booted) return;
+        if (window.__appBooted || document.querySelector(".view.active")) {
+          booted = true;
+          var el = document.getElementById("bootError");
+          if (el) el.hidden = true;
+          return;
+        }
+        render();
+        setTimeout(check, POLL_MS);      // 持续复查: 恢复后自动撤销提示
+      }
+      setTimeout(check, BOOT_TIMEOUT_MS);
+
+      // 强刷按钮: location.reload(true) 已废弃, 用带时间戳参数绕过缓存
+      var forceBtn = document.getElementById("bootErrorForceBtn");
+      if (forceBtn) forceBtn.addEventListener("click", function () {
+        location.href = pageUrl() + (location.search ? "&" : "?") +
+          "_bust=" + Date.now();
+      });
+    })();
   </script>
 </body>
 </html>

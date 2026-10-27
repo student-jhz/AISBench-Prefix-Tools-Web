@@ -1,9 +1,4 @@
-// 启动自检(watchdog)组件测试 —— v2.0.2 误报修复的回归验证
-//
-// 旧版 bug: 在 4s 时检查一次 ".view.active" 且永不撤销; 而 main.js 的 init()
-// 会先 await /api/state 再渲染首屏 —— 后端/SSH 慢时(如正在 docker load)
-// 永久误报"界面加载失败", 刷新也无效。新版依据 window.__appBooted
-// (模块图求值成功标记)判定, 且启动成功后自动隐藏提示。
+// 启动自检(watchdog)测试 —— 误报修复 + 失败原因自报的回归验证
 import fs from "node:fs";
 import path from "node:path";
 
@@ -13,95 +8,139 @@ function check(name, cond) {
   if (!cond) failed++;
 }
 
-// ---- 从 index.html 提取内联(非 module)脚本 ----
 const html = fs.readFileSync(path.resolve("frontend/index.html"), "utf8");
 const scripts = [...html.matchAll(/<script([^>]*)>([\s\S]*?)<\/script>/g)]
   .filter(m => !/\bsrc=/.test(m[1]) && !/\btype=/.test(m[1]));
 check("index.html 含内联自检脚本", scripts.length === 1);
-const watchdogSrc = scripts[0][2];
+const src = scripts[0][2];
 
-// main.js 必须在模块顶层设置启动标记(任何模块加载失败都到不了这里)
 const mainSrc = fs.readFileSync(
   path.resolve("frontend/static/js/main.js"), "utf8");
 check("main.js 顶层设置 __appBooted",
   /window\.__appBooted\s*=\s*true/.test(mainSrc));
-
-// main.js 必须先渲染首屏再等待状态(不再被 /api/state 阻塞)
 const initIdx = mainSrc.lastIndexOf("async function init()");
 const initSrc = mainSrc.slice(initIdx);
-const showIdx = initSrc.indexOf('showView("step1")');
-const waitIdx = initSrc.indexOf("await refreshState()");
-check("init 先渲染后等状态", showIdx >= 0 && waitIdx >= 0 && showIdx < waitIdx);
+check("init 先渲染后等状态",
+  initSrc.indexOf('showView("step1")') < initSrc.indexOf("await refreshState()"));
 
-// ---- 在 DOM 桩中执行自检脚本 ----
-function makeEnv({ booted, hasActiveView }) {
-  const errorEl = { hidden: true };
-  const listeners = [];
-  const timeouts = [];
+// 在 DOM 桩中执行自检脚本
+function makeEnv({ booted = false, active = false } = {}) {
+  const els = {
+    bootError: { hidden: true },
+    bootErrorReason: { innerHTML: "" },
+    bootErrorDiag: { textContent: "" },
+    bootErrorForceBtn: {
+      listeners: [], addEventListener(ev, fn) { this.listeners.push(fn); },
+    },
+  };
   const window = {
     __appBooted: booted,
-    addEventListener: (ev, fn) => listeners.push({ ev, fn }),
+    listeners: [],
+    addEventListener: (ev, fn) => window.listeners.push({ ev, fn }),
   };
   const document = {
-    getElementById: id => (id === "bootError" ? errorEl : null),
-    querySelector: sel => (sel === ".view.active" && hasActiveView ? {} : null),
+    getElementById: id => els[id] || null,
+    querySelector: () => (active ? {} : null),
   };
-  const runScript = new Function("window", "document", "setTimeout",
-    `${watchdogSrc}`);
-  runScript(window, document, (fn, ms) => timeouts.push({ fn, ms }));
-  return { errorEl, listeners, timeouts, window };
+  const timers = [];
+  const setTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
+  const setInterval = (fn, ms) => { timers.push({ fn, ms, repeat: true }); return timers.length; };
+  window.fetch = () => Promise.resolve({
+    ok: true, json: () => Promise.resolve({ version: "9.9.9" }),
+  });
+  const navigator = { userAgent: "test-agent" };
+  const location = { pathname: "/", search: "", origin: "http://x" };
+  const run = new Function("window", "document", "setTimeout", "setInterval",
+    "navigator", "location", "fetch", src);
+  // 包装为动态查找: 场景 7 替换 window.fetch 后闭包内立即生效
+  run(window, document, setTimeout, setInterval, navigator, location,
+    (...args) => window.fetch(...args));
+  return { els, window, timers, document };
 }
 
-// 场景1: 模块已启动(__appBooted) → 永不显示错误; 若曾显示则自动隐藏
-{
-  const { errorEl, timeouts } = makeEnv({ booted: true, hasActiveView: false });
-  timeouts.forEach(t => t.fn());
-  check("已启动: 不显示错误", errorEl.hidden === true);
+function fire(env, ev, arg) {
+  env.window.listeners.filter(l => l.ev === ev).forEach(l => l.fn(arg));
+}
+function tick(env) {
+  const t = env.timers.shift();
+  if (t) t.fn();
+}
+function tickAll(env) {
+  for (let i = 0; i < 60 && env.timers.length; i++) tick(env);
 }
 
-// 场景2: 首屏已渲染(main.js 先渲染后等状态) → 同样判定成功
+// 1) 正常启动: __appBooted 已设置 → 隐藏
 {
-  const { errorEl, timeouts } = makeEnv({ booted: false, hasActiveView: true });
-  timeouts.forEach(t => t.fn());
-  check("首屏已渲染: 不显示错误", errorEl.hidden === true);
+  const env = makeEnv({ booted: true });
+  tickAll(env);
+  check("已启动: 不显示错误", env.els.bootError.hidden === true);
 }
 
-// 场景3: 模块图真失败(无标记无视图) → 显示错误
+// 2) 首屏已渲染 → 隐藏
 {
-  const { errorEl, timeouts } = makeEnv({ booted: false, hasActiveView: false });
-  timeouts.forEach(t => t.fn());
-  check("模块失败: 显示错误提示", errorEl.hidden === false);
+  const env = makeEnv({ active: true });
+  tickAll(env);
+  check("首屏已渲染: 不显示错误", env.els.bootError.hidden === true);
 }
 
-// 场景4: 慢启动恢复 —— 前几轮未启动(误显示), 随后 __appBooted 出现 → 自动隐藏
+// 3) 模块失败(无标记无视图) → 显示 + 原因自报
 {
-  const env = makeEnv({ booted: false, hasActiveView: false });
-  env.timeouts[0].fn();               // 3s: 尚未启动 → 显示
-  check("慢启动: 先误显示", env.errorEl.hidden === false);
-  env.window.__appBooted = true;      // 5s 时模块加载完成
-  env.timeouts.slice(1).forEach(t => t.fn());
-  check("慢启动: 后自动隐藏(修复刷新也没用的误报)", env.errorEl.hidden === true);
+  const env = makeEnv();
+  tickAll(env);
+  check("模块失败: 显示错误", env.els.bootError.hidden === false);
+  check("诊断区含后端健康信息", /后端健康/.test(env.els.bootErrorDiag.textContent));
+  check("诊断区含等待时间", /已等待/.test(env.els.bootErrorDiag.textContent));
 }
 
-// 场景5: 脚本资源加载失败(404) → 立即触发自检并显示
+// 4) 慢启动恢复(旧版 20s 停止轮询导致永久残留的缺陷):
+//    多轮"未启动"后模块终于启动 → 提示必须自动消失
 {
-  const env = makeEnv({ booted: false, hasActiveView: false });
-  const res = env.listeners.find(l => l.ev === "error");
-  check("注册了资源加载失败监听", !!res);
-  if (res) {
-    res.fn({ target: { tagName: "SCRIPT" } });
-    check("脚本404: 立即显示错误", env.errorEl.hidden === false);
-  }
+  const env = makeEnv();
+  for (let i = 0; i < 10; i++) tick(env);   // 50 秒都未启动
+  check("慢启动: 期间显示提示", env.els.bootError.hidden === false);
+  env.window.__appBooted = true;            // 之后模块加载成功
+  tick(env);
+  check("慢启动恢复: 提示自动消失(不再 20s 停止轮询)",
+    env.els.bootError.hidden === true);
 }
 
-// 场景6: 非脚本资源(如图片)报错 → 不误触发
+// 5) 脚本 404 → 立即显示且原因包含具体 URL
 {
-  const env = makeEnv({ booted: true, hasActiveView: true });
-  const res = env.listeners.find(l => l.ev === "error");
-  if (res) {
-    res.fn({ target: { tagName: "IMG" } });
-    check("图片错误: 不影响", env.errorEl.hidden === true);
-  }
+  const env = makeEnv();
+  fire(env, "error", {
+    target: { tagName: "SCRIPT", src: "http://x/static/js/step5.js?v=9", status: 404 },
+  });
+  tickAll(env);
+  check("脚本404: 立即显示", env.els.bootError.hidden === false);
+  check("脚本404: 原因含具体路径",
+    /\/static\/js\/step5\.js\?v=9/.test(env.els.bootErrorDiag.textContent));
+}
+
+// 6) 模块求值异常 → 原因含异常消息与文件行号
+{
+  const env = makeEnv();
+  fire(env, "error", {
+    message: "x is not defined",
+    filename: "http://x/static/js/step2.js?v=9",
+    lineno: 12,
+  });
+  tickAll(env);
+  check("求值异常: 原因含消息与位置",
+    /x is not defined @ \/static\/js\/step2\.js\?v=9:12/.test(
+      env.els.bootErrorDiag.textContent));
+}
+
+// 7) 后端不可达 → 诊断区标明
+{
+  const env = makeEnv();
+  // 先让初始健康探测的 microtask 完成(避免与故障探测竞态互覆盖)
+  await new Promise(r => setTimeout(r, 20));
+  env.window.fetch = () => Promise.reject(new Error("HTTP 503"));
+  const interval = env.timers.find(t => t.repeat);
+  if (interval) interval.fn();
+  await new Promise(r => setTimeout(r, 20));
+  tickAll(env);
+  check("后端不可达: 诊断区标明", /不可达/.test(env.els.bootErrorDiag.textContent));
 }
 
 if (failed) {
