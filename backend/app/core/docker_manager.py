@@ -62,6 +62,11 @@ class DockerManager:
         self.code_host_path = ""
         self.remote_work_base = "/tmp/AISBench_Prefix_Tools"
 
+    @staticmethod
+    def _shquote(s: str) -> str:
+        """远程 shell 参数加单引号(内嵌单引号安全转义)"""
+        return "'" + str(s).replace("'", "'\\''") + "'"
+
     def check_docker_installed(self) -> Tuple[bool, str]:
         """检查Docker是否安装"""
         code, out, err = self.ssh.execute("docker --version 2>&1")
@@ -214,28 +219,34 @@ class DockerManager:
         return False, (err or out).strip() or f"启动失败 (exit_code={code})"
 
     def list_images(self) -> List[dict]:
-        """列出执行机上全部镜像(供用户选择, 前端按需过滤 aisbench)"""
+        """列出执行机上全部镜像(供用户选择, 前端按需过滤 aisbench)
+
+        使用 --format '{{json .}}' 逐行输出 JSON —— 不用 \\t 分隔符:
+        Go 模板在 {{}} 动作外的文本不解释转义, '\\t' 会按字面输出,
+        曾导致镜像/容器列表解析为空(v2.0.1 修复)。
+        """
         code, out, _ = self.ssh.execute(
-            "docker images --format "
-            "'{{.Repository}}\\t{{.Tag}}\\t{{.ID}}\\t{{.Size}}\\t{{.CreatedAt}}'"
+            "docker images --format '{{json .}}'"
         )
         items: List[dict] = []
         if code != 0:
             return items
         for line in out.strip().splitlines():
-            parts = line.split("\t")
-            if len(parts) < 4:
+            try:
+                row = json.loads(line)
+            except ValueError:
                 continue
-            repo, tag, image_id, size = parts[0], parts[1], parts[2], parts[3]
-            if repo == "<none>":
+            repo = row.get("Repository", "")
+            if not repo or repo == "<none>":
                 continue
+            tag = row.get("Tag", "")
             items.append({
                 "repository": repo,
                 "tag": tag,
                 "name": f"{repo}:{tag}",
-                "id": image_id,
-                "size": size,
-                "created": parts[4] if len(parts) > 4 else "",
+                "id": row.get("ID", ""),
+                "size": row.get("Size", ""),
+                "created": row.get("CreatedAt", ""),
             })
         return items
 
@@ -244,27 +255,32 @@ class DockerManager:
         """列出执行机上的 aisbench 测试容器(多用户共享的容器资源池)
 
         仅返回指定前缀的容器, 其余容器(他人/其他业务)不可见也不可清理。
+        使用 --format '{{json .}}' 逐行 JSON, 规避 \\t 转义问题(见 list_images)。
         """
         code, out, _ = self.ssh.execute(
-            "docker ps -a --format "
-            "'{{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.RunningFor}}'"
+            "docker ps -a --format '{{json .}}'"
         )
         items: List[dict] = []
         if code != 0:
             return items
         for line in out.strip().splitlines():
-            parts = line.split("\t")
-            if len(parts) < 3:
+            try:
+                row = json.loads(line)
+            except ValueError:
                 continue
-            name, image, status = parts[0], parts[1], parts[2]
+            names = row.get("Names") or []
+            name = names[0] if names else ""
             if not any(name.startswith(p) for p in prefixes):
                 continue
+            status = row.get("Status", "")
+            state = row.get("State", "")
             items.append({
                 "name": name,
-                "image": image,
+                "image": row.get("Image", ""),
                 "status": status,
-                "running": status.lower().startswith("up"),
-                "created": parts[3] if len(parts) > 3 else "",
+                # State 字段更可靠(running/exited/...), Status 文本作后备
+                "running": state == "running" or status.lower().startswith("up"),
+                "created": row.get("RunningFor", ""),
             })
         return items
 
@@ -283,27 +299,71 @@ class DockerManager:
                 return True, line.strip()[:200]
         return False, ""
 
+    def list_container_dirs(self, name: str,
+                            path: str = "/") -> Tuple[List[dict], str]:
+        """列出容器内的子目录(步骤3 MODEL_PATH 浏览选择)
+
+        通过 docker exec 在容器内执行 ls(参数逐个引用传给 docker exec,
+        不经容器内 shell), 返回 (子目录列表, 错误信息)。
+        MODEL_PATH 必须是容器内路径, 因此浏览的就是容器视角的目录树。
+        """
+        norm = (path or "/").strip() or "/"
+        if not norm.startswith("/"):
+            norm = "/" + norm
+        norm = norm.rstrip("/") or "/"
+        cmd = (f"docker exec {self._shquote(name)} ls -1Ap "
+               f"{self._shquote(norm)}")
+        code, out, err = self.ssh.execute(cmd, timeout=30)
+        if code != 0:
+            msg = (err or "").strip()[:200] or f"退出码 {code}"
+            return [], msg
+        entries: List[dict] = []
+        for line in out.splitlines():
+            entry = line.strip()
+            # ls -p 给目录追加 '/', 据此只保留目录(模型权重是目录)
+            if not entry.endswith("/"):
+                continue
+            dname = entry[:-1]
+            if dname in (".", ".."):
+                continue
+            full = f"{norm}/{dname}" if norm != "/" else f"/{dname}"
+            entries.append({"name": dname, "path": full, "type": "dir"})
+        return entries, ""
+
     def inspect_container(self, name: str) -> Optional[dict]:
         """docker inspect 读取容器信息(镜像/状态/挂载), 用于选择已有容器
 
         返回 None 表示容器不存在; 挂载解析:
         - 代码挂载: 容器内路径含 aisbench_auto_tools_prefix
         - 其余挂载视为模型目录挂载
+
+        直接解析 `docker inspect` 的标准 JSON 输出 —— 不用
+        --format '...}}\\t{{...' 拼接: Go 模板对 {{}} 动作外的文本
+        不解释转义, \\t 会按字面输出两个字符, 曾导致:
+        - state 永远解析成 unknown → 界面一直显示"已停止/无法执行"
+        - Binds 解析为空 → code_host_path 为空 → config.py SFTP 写入失败
+        (v2.0.1 修复)
         """
         code, out, _ = self.ssh.execute(
-            f"docker inspect --format "
-            f"'{{{{.Config.Image}}}}\\t{{{{.State.Status}}}}\\t"
-            f"{{{{json .HostConfig.Binds}}}}' {name} 2>/dev/null")
+            f"docker inspect {self._shquote(name)} 2>/dev/null")
         if code != 0 or not out.strip():
             return None
-        line = out.strip().splitlines()[0]
-        parts = line.split("\t", 2)
-        image = parts[0]
-        state = parts[1] if len(parts) > 1 else "unknown"
         try:
-            binds = json.loads(parts[2]) if len(parts) > 2 else []
-        except (ValueError, IndexError):
-            binds = []
+            data = json.loads(out)
+        except ValueError:
+            return None
+        if isinstance(data, list):
+            if not data:
+                return None
+            data = data[0]
+
+        cfg = data.get("Config") or {}
+        state_obj = data.get("State") or {}
+        host_cfg = data.get("HostConfig") or {}
+        image = cfg.get("Image", "")
+        state = state_obj.get("Status", "unknown")
+        running = bool(state_obj.get("Running", state == "running"))
+        binds = host_cfg.get("Binds") or []
 
         mounts = []
         for bind in binds or []:
@@ -323,7 +383,7 @@ class DockerManager:
             "name": name,
             "image": image,
             "state": state,
-            "running": state == "running",
+            "running": running,
             "mounts": mounts,
             "code_host_path": code_mount["host"] if code_mount else "",
             "code_mount_path": code_mount["container"] if code_mount

@@ -24,6 +24,11 @@
 | Busy 感知 | 容器列表实时检测是否正在执行测试（`docker top` 匹配 `run_tests.sh|aisbench_test.py` + 本服务执行分槽）；busy 容器给出醒目警示并建议新建容器，选择/执行前二次确认 |
 | 安全清理 | 清理必须逐个勾选容器名；仅 `aisbench` 前缀（含旧版 `aisbench-`）可操作；正在执行测试的容器自动跳过，避免误伤他人任务 |
 
+> v2.0.1 修复：docker `--format` 中 `\t` 在 Go 模板动作外**不解释转义**、按字面输出，
+> 曾导致 inspect 解析失败（state=unknown、Binds 为空 → 界面显示"已停止"、config.py
+> SFTP 写入挂载目录失败）。现改为解析 `docker inspect` 标准 JSON 与 `--format '{{json .}}'`
+> 逐行输出，彻底规避分隔符转义问题。
+
 ## 2. 总体架构
 
 ```
@@ -127,6 +132,7 @@ Web 服务维护一个全局 SSH 连接（步骤 1 建立，全流程共用）�
 | 远程浏览 | `GET /api/fs/list?path=` | SFTP 列目录（模型路径选择器） |
 | 上传 | `POST /api/upload/{image|code-zip|ssh-key|compare-csv}` | 保存到 `data/uploads/`，tar 上传时预读 manifest 得到镜像名 |
 | 容器池 | `GET /api/containers/list`、`GET /api/containers/images`、`POST /api/containers/{select|start}`、`GET /api/containers/busy?name=` | 列出容器（含 busy）/镜像、选择已有容器（busy 拦截）、启动已停止容器、实时 busy 查询 |
+| 容器内浏览 | `GET /api/containers/fs?name=&path=` | `docker exec ls` 列出容器内子目录（步骤 3 MODEL_PATH 浏览选择） |
 | 部署 | `GET /api/deploy/preflight`、`POST /api/deploy/start|cancel`、`GET /api/deploy/status` | 后台线程执行 5 阶段容器创建（镜像三模式：existing/upload/remote） |
 | 配置 | `POST /api/config/{preview|save|verify|read}`、`GET /api/config/defaults` | 生成/写入/回读校验 config.py（请求携带 container） |
 | 用例 | `GET /api/designer/presets`、`POST /api/designer/{generate|cases|script}` | 无状态计算：KV 参数 → 用例/命令/脚本 |

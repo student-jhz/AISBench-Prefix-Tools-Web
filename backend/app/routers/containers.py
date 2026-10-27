@@ -123,7 +123,36 @@ def container_busy(name: str, state: AppState = Depends(get_state)):
     return {
         "name": name,
         "running": running,
+        "state": info.get("state", "unknown"),
+        "image": info.get("image", ""),
         "busy": busy or executing_here,
         "busy_detail": detail,
         "executing_here": executing_here,
     }
+
+
+@router.get("/fs")
+def container_fs(name: str, path: str = "/",
+                 state: AppState = Depends(get_state)):
+    """列出容器内目录(步骤 3 选择 MODEL_PATH 用)
+
+    MODEL_PATH 是容器内路径, 因此浏览容器视角的目录树:
+    所选路径直接即为有效 MODEL_PATH, 不存在宿主机/容器路径换算问题。
+    """
+    docker = _docker(state)
+    name = (name or "").strip()
+    path = (path or "/").strip() or "/"
+    if not name:
+        raise HTTPException(400, "请指定容器名")
+    if not is_managed_container_name(name):
+        raise HTTPException(400, f"仅支持 aisbench 前缀的容器: {name}")
+    if not docker.container_exists(name):
+        raise HTTPException(400, f"容器不存在: {name}")
+    info = docker.inspect_container(name) or {}
+    if not info.get("running"):
+        raise HTTPException(
+            400, f"容器 {name} 未运行, 请先启动后再浏览容器内目录")
+    entries, err = docker.list_container_dirs(name, path)
+    if err:
+        raise HTTPException(400, f"列出容器目录失败: {err}")
+    return {"path": path, "entries": entries}

@@ -3,6 +3,7 @@
 import { $, setMsg, toast, debounce } from "./util.js";
 import { api } from "./api.js";
 import { G } from "./main.js";
+import { browseContainerDir } from "./components.js";
 
 
 // 界面字段 -> config.py 键
@@ -51,6 +52,7 @@ export function initStep3() {
   $("#configSaveBtn").addEventListener("click", saveConfig);
   $("#configVerifyBtn").addEventListener("click", verifyConfig);
   $("#configReadBtn").addEventListener("click", readConfig);
+  $("#cfgModelPathBrowseBtn").addEventListener("click", browseModelPath);
 
   // 供 main.js 在切换到步骤3视图时调用(选择容器后刷新默认值)
   window.syncConfigFromContainer = syncFromContainer;
@@ -63,6 +65,28 @@ function collectConfig() {
     config[field] = $(sel).value.trim();
   }
   return config;
+}
+
+
+/** 从容器内目录浏览选择 MODEL_PATH(路径即容器内路径, 直接生效) */
+function browseModelPath() {
+  if (!G.containerInfo?.name) {
+    toast("请先在步骤 2 选择或创建容器", "warning");
+    return;
+  }
+  const input = $("#cfgModelPath");
+  const initial = input.value.trim()
+    || G.containerInfo.model_path_hint || "/";
+  browseContainerDir({
+    container: G.containerInfo.name,
+    initialPath: initial,
+    onPick: path => {
+      input.value = path;
+      dirtyFields.add("model_path");   // 用户显式选择, 不再被自动填充覆盖
+      updatePreview();
+      toast(`已选择 MODEL_PATH: ${path}`, "success", 2500);
+    },
+  });
 }
 
 

@@ -46,6 +46,7 @@ class FakeSSH:
         self.containers = {}  # name -> status
         self.container_meta = {}    # name -> {"image", "binds"}
         self.busy_containers = set()  # 模拟正在执行测试的容器
+        self.container_fs = {}  # name -> {容器内路径: [子目录名, ...]}(ls 浏览用)
         self.exec_log = []
 
     # ------------------------------------------------------------ 连接
@@ -74,26 +75,36 @@ class FakeSSH:
         if command.startswith("docker --version"):
             return 0, "Docker version 24.0.0, build abc\n", ""
 
-        # ---- v2.0 容器资源池: 镜像列表(tab分隔) ----
-        if "docker images --format" in command and "{{.Repository}}\\t{{.Tag}}" in command:
+        # ---- v2.0.1 容器资源池: 镜像列表(逐行 JSON, 规避 \t 转义问题) ----
+        if "docker images --format" in command and "{{json .}}" in command:
             out = ""
             for img in sorted(self.images):
                 repo, _, tag = img.rpartition(":")
-                out += f"{repo}\t{tag}\tabc123\t1.2GB\t2026-01-01 00:00:00 +0800 CST\n"
+                out += json.dumps({
+                    "Repository": repo, "Tag": tag, "ID": "abc123",
+                    "Size": "1.2GB",
+                    "CreatedAt": "2026-01-01 00:00:00 +0800 CST",
+                }) + "\n"
             return 0, out, ""
 
-        # ---- v2.0 容器资源池: 容器列表(tab分隔, 含已停止) ----
-        if "docker ps -a --format" in command and "{{.Names}}\\t{{.Image}}" in command:
+        # ---- v2.0.1 容器资源池: 容器列表(逐行 JSON, 含已停止) ----
+        if "docker ps -a --format" in command and "{{json .}}" in command:
             out = ""
             for name, status in self.containers.items():
                 meta = self.container_meta.get(name, {})
-                out += (f"{name}\t{meta.get('image', 'fakeimage:latest')}\t"
-                        f"{status}\tAbout a minute ago\n")
+                state = "running" if status.lower().startswith("up") else "exited"
+                out += json.dumps({
+                    "Names": [name],
+                    "Image": meta.get("image", "fakeimage:latest"),
+                    "State": state,
+                    "Status": status,
+                    "RunningFor": "About a minute ago",
+                }) + "\n"
             return 0, out, ""
 
-        # ---- v2.0: docker inspect(镜像/状态/挂载) ----
-        if "docker inspect --format" in command:
-            m = re.search(r"docker inspect --format '[^']*' (\S+)", command)
+        # ---- v2.0.1: docker inspect(标准 JSON 输出, 镜像/状态/挂载) ----
+        if command.startswith("docker inspect"):
+            m = re.search(r"docker inspect '?([\w.-]+)'? 2>/dev/null", command)
             name = m.group(1) if m else ""
             if name not in self.containers:
                 return 1, "", "Error: No such object: " + name
@@ -101,7 +112,26 @@ class FakeSSH:
             state = "running" if status.lower().startswith("up") else "exited"
             meta = self.container_meta.get(name, {})
             binds = meta.get("binds", [])
-            out = f"{meta.get('image', 'fakeimage:latest')}\t{state}\t{json.dumps(binds)}\n"
+            info = {
+                "Config": {"Image": meta.get("image", "fakeimage:latest")},
+                "State": {
+                    "Status": state,
+                    "Running": state == "running",
+                },
+                "HostConfig": {"Binds": binds},
+            }
+            return 0, json.dumps([info]) + "\n", ""
+
+        # ---- v2.0.1: 容器内目录浏览(docker exec ls, 步骤3 MODEL_PATH) ----
+        if "docker exec" in command and "ls -1Ap" in command:
+            m = re.search(r"docker exec '([\w.-]+)' ls -1Ap '([^']*)'", command)
+            name, path = (m.group(1), m.group(2)) if m else ("", "/")
+            if name not in self.containers:
+                return 1, "", "Error: No such container: " + name
+            subdirs = self.container_fs.get(name, {}).get(path)
+            if subdirs is None:
+                return 2, "", f"ls: cannot access '{path}': No such file or directory"
+            out = "".join(f"{d}/\n" for d in subdirs)
             return 0, out, ""
 
         # ---- v2.0: docker top(测试执行中检测) ----

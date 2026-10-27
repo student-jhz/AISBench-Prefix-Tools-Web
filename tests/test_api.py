@@ -508,6 +508,10 @@ class TestContainersAPI:
         assert info["model_mounts"] == [{"host": "/mnt/models/ds",
                                          "container": "/mnt/models/ds"}]
         assert "aisbench_auto_tools_prefix" in info["code_mount_path"]
+        # v2.0.1 回归: inspect 解析 Binds 得到宿主机代码路径(config.py SFTP 写入依赖)
+        assert info["code_host_path"].startswith("/tmp/AISBench_Prefix_Tools")
+        assert info["code_host_path"].endswith("aisbench_auto_tools_prefix-main")
+        assert info["state"] == "running"
         # 已登记为当前容器
         state = c.get("/api/state").json()
         assert state["deploy"]["container_name"] == "aisbench_pool_a"
@@ -557,6 +561,53 @@ class TestContainersAPI:
         r = c.get("/api/containers/images")
         names = {img["name"] for img in r.json()["images"]}
         assert names == {"aisbench:v1", "ubuntu:22.04"}
+
+    def test_container_fs_browse(self, client, tmp_path):
+        """步骤3 MODEL_PATH 浏览: 列出容器内目录, 路径即容器内路径"""
+        c, ssh, _ = client
+        self._create(c, tmp_path, "aisbench_fs_box")
+        ssh.container_fs["aisbench_fs_box"] = {
+            "/": ["mnt", "benchmark"],
+            "/mnt": ["model"],
+            "/mnt/model": ["ds_v3", "qwen3"],
+        }
+
+        r = c.get("/api/containers/fs",
+                  params={"name": "aisbench_fs_box", "path": "/mnt/model"})
+        assert r.status_code == 200, r.text
+        entries = r.json()["entries"]
+        assert [e["name"] for e in entries] == ["ds_v3", "qwen3"]
+        assert entries[0]["path"] == "/mnt/model/ds_v3"
+        assert entries[0]["type"] == "dir"
+
+        # 不存在的目录 → 400(便于前端提示)
+        r = c.get("/api/containers/fs",
+                  params={"name": "aisbench_fs_box", "path": "/no/such"})
+        assert r.status_code == 400
+
+        # 容器停止后不能浏览
+        ssh.containers["aisbench_fs_box"] = "Exited (0) 1 minute ago"
+        r = c.get("/api/containers/fs",
+                  params={"name": "aisbench_fs_box", "path": "/"})
+        assert r.status_code == 400
+        assert "未运行" in r.json()["detail"]
+
+    def test_select_stopped_container_reports_state(self, client, tmp_path):
+        """停止容器: state=exited/running=False(而非 unknown 解析失败)"""
+        c, ssh, _ = client
+        self._create(c, tmp_path, "aisbench_state_box")
+        ssh.containers["aisbench_state_box"] = "Exited (137) 10 seconds ago"
+
+        r = c.post("/api/containers/select", json={"name": "aisbench_state_box"})
+        info = r.json()["info"]
+        assert info["running"] is False
+        assert info["state"] == "exited"
+
+        # busy 端点返回真实 state(修复"一直显示已停止 unknown"的问题)
+        r = c.get("/api/containers/busy", params={"name": "aisbench_state_box"})
+        data = r.json()
+        assert data["running"] is False
+        assert data["state"] == "exited"
 
 
 class TestConfigAPI:

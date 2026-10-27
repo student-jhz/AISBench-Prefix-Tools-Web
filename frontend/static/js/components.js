@@ -157,6 +157,79 @@ export function browseRemoteDir({ title = "浏览远程目录 - 选择模型路�
 
 
 /**
+ * 浏览容器内目录(步骤 3 选择 MODEL_PATH 用)
+ * container: 容器名; initialPath: 起始目录(建议传容器模型挂载路径)
+ * onPick(path): 选中目录回调 —— 路径即容器内路径, 直接作为 MODEL_PATH
+ */
+export function browseContainerDir({ container, initialPath = "/", onPick }) {
+  let currentPath = initialPath || "/";
+
+  const m = modal({ title: "浏览容器内目录 - 选择 MODEL_PATH", large: true });
+  const pathInput = el("input", { type: "text", value: currentPath });
+  const listBox = el("div", { class: "browser-list" });
+  const statusEl = el("div", { class: "inline-msg muted", style: "margin-top:8px" });
+
+  function load(path) {
+    currentPath = path;
+    pathInput.value = path;
+    listBox.innerHTML = `<div class="file-list-empty">加载中...</div>`;
+    api.get(`/api/containers/fs?name=${encodeURIComponent(container)}` +
+      `&path=${encodeURIComponent(path)}`)
+      .then(data => renderList(data.entries || []))
+      .catch(err => {
+        listBox.innerHTML = "";
+        listBox.append(el("div", { class: "file-list-empty" },
+          `加载失败: ${err.message}`));
+      });
+  }
+
+  function renderList(entries) {
+    listBox.innerHTML = "";
+    statusEl.textContent = entries.length
+      ? `${entries.length} 个子目录` : "（无子目录）";
+    if (currentPath !== "/") {
+      listBox.append(dirRow("📁 ..", () => load(parentPath(currentPath))));
+    }
+    for (const entry of entries) {
+      listBox.append(dirRow(`📁 ${entry.name}`, () => load(entry.path)));
+    }
+  }
+
+  function dirRow(label, onClick) {
+    return el("div", {
+      class: "file-item",
+      onclick: onClick,
+      title: "点击进入",
+      style: "cursor:pointer",
+    }, el("span", {}, label));
+  }
+
+  m.body.append(
+    el("div", { class: "browser-path-row" },
+      pathInput,
+      el("button", {
+        class: "btn btn-primary btn-sm",
+        onclick: () => load(pathInput.value.trim() || "/"),
+      }, "前往"),
+      el("button", {
+        class: "btn btn-outline btn-sm",
+        onclick: () => load(parentPath(currentPath)),
+      }, "↑ 上级")),
+    listBox, statusEl);
+
+  m.footer.append(
+    el("button", { class: "btn btn-outline", onclick: m.close }, "取消"),
+    el("button", {
+      class: "btn btn-primary",
+      onclick: () => { const p = currentPath; m.close(); onPick(p); },
+    }, "选择当前目录"));
+
+  load(currentPath);
+  return m;
+}
+
+
+/**
  * 轻量分组柱状图(Canvas, 无外部依赖)
  * labels: [string]; series: [{name, color, values: [number|null]}]
  * options: {unit, decimals}

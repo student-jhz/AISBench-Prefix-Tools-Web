@@ -610,19 +610,26 @@ function initCurrentCard() {
 
 async function updateCurrentCard(force = false) {
   const card = $("#currentContainerCard");
-  const grid = $("#currentContainerGrid");
-  const banner = $("#currentBusyBanner");
-  const info = G.containerInfo;
-
-  if (!info?.name) {
+  if (!G.containerInfo?.name) {
     card.hidden = true;
     return;
   }
   card.hidden = false;
+  renderCurrentGrid();
+  await refreshCurrentStatus();
+  if (force) toast("容器状态已刷新", "info", 1500);
+}
+
+/** 渲染当前容器信息网格(从 G.containerInfo) */
+function renderCurrentGrid() {
+  const grid = $("#currentContainerGrid");
+  const info = G.containerInfo;
+  if (!info?.name) return;
   grid.innerHTML = "";
 
   const mounts = (info.model_mounts || [])
-    .map(m => `${m.host} → ${m.container}`).join("\n") || "-";
+    .map(m => `${m.host} → ${m.container}`).join("
+") || "-";
   grid.append(
     infoItem("容器名称", info.name),
     infoItem("镜像", info.image || "-"),
@@ -631,42 +638,68 @@ async function updateCurrentCard(force = false) {
     infoItem("模型目录挂载", mounts),
     infoItem("代码路径(宿主机)", info.code_host_path || "-"),
   );
+}
 
+/** 查询实时状态(busy/running), 回填后重渲染信息网格与横幅 */
+async function refreshCurrentStatus() {
+  const name = G.containerInfo?.name;
+  if (!name) return;
+  try {
+    const st = await api.get(
+      `/api/containers/busy?name=${encodeURIComponent(name)}`, { silent: true });
+    G.containerInfo = { ...G.containerInfo, ...st, name };
+  } catch { /* 忽略实时状态错误 */ }
+  renderCurrentGrid();
+  renderCurrentBanner();
+  // 同步步骤5的执行容器卡片
+  window.refreshExecContainer?.();
+}
+
+/** 渲染 busy / 未运行横幅(含启动按钮) */
+function renderCurrentBanner() {
+  const banner = $("#currentBusyBanner");
+  const info = G.containerInfo;
   banner.hidden = true;
   banner.innerHTML = "";
+  if (!info?.name) return;
+  if (info.busy) {
+    banner.hidden = false;
+    banner.className = "busy-banner warn";
+    banner.textContent =
+      `⏳ 该容器正在执行测试${info.busy_detail ? `: ${info.busy_detail}` : ""} —— ` +
+      "如需执行新测试任务, 建议新建一个容器。";
+  } else if (!info.running) {
+    banner.hidden = false;
+    banner.className = "busy-banner error";
+    banner.append(
+      el("span", {}, "⚠ 容器未运行, 无法执行测试。"),
+      el("button", {
+        class: "btn btn-outline btn-sm",
+        onclick: async () => {
+          try {
+            await api.post("/api/containers/start", { name: info.name });
+            toast(`容器 ${info.name} 已启动`, "success");
+            await reinspectCurrentContainer();
+          } catch (err) { toast(err.message, "error"); }
+        },
+      }, "▶ 启动容器"));
+  }
+}
 
-  // 实时刷新 busy 状态(不阻塞渲染)
-  api.get(`/api/containers/busy?name=${encodeURIComponent(info.name)}`, { silent: true })
-    .then(st => {
-      G.containerInfo = { ...G.containerInfo, ...st, name: info.name };
-      if (st.busy) {
-        banner.hidden = false;
-        banner.className = "busy-banner warn";
-        banner.textContent =
-          `⏳ 该容器正在执行测试${st.busy_detail ? `: ${st.busy_detail}` : ""} —— ` +
-          "如需执行新测试任务, 建议新建一个容器。";
-      } else if (!st.running) {
-        banner.hidden = false;
-        banner.className = "busy-banner error";
-        banner.append(
-          el("span", {}, "⚠ 容器未运行, 无法执行测试。"),
-          el("button", {
-            class: "btn btn-outline btn-sm",
-            onclick: async () => {
-              try {
-                await api.post("/api/containers/start", { name: info.name });
-                toast(`容器 ${info.name} 已启动`, "success");
-                updateCurrentCard();
-              } catch (err) { toast(err.message, "error"); }
-            },
-          }, "▶ 启动容器"));
-      }
-      // 同步步骤5的执行容器卡片
-      window.refreshExecContainer?.();
-    })
-    .catch(() => { /* 忽略实时状态错误 */ });
-
-  if (force) toast("容器状态已刷新", "info", 1500);
+/** 重新 inspect 当前容器(force select), 获取最新镜像/状态/挂载后刷新卡片 */
+async function reinspectCurrentContainer() {
+  const name = G.containerInfo?.name;
+  if (!name) return;
+  try {
+    const data = await api.post("/api/containers/select",
+      { name, force: true }, { silent: true });
+    if (data.selected) {
+      G.containerInfo = { ...G.containerInfo, ...data.info,
+        busy: data.busy, busy_detail: data.busy_detail };
+    }
+  } catch { /* 容器可能已被删除 */ }
+  updateCurrentCard();
+  window.syncConfigFromContainer?.();
 }
 
 function infoItem(label, value) {

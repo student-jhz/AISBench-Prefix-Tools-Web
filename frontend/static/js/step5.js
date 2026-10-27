@@ -194,6 +194,22 @@ async function refreshExecContainer(force = false) {
     const st = await api.get(
       `/api/containers/busy?name=${encodeURIComponent(info.name)}`, { silent: true });
     G.containerInfo = { ...G.containerInfo, ...st, name: info.name };
+    // 状态回填后重渲染信息网格(否则网格仍是查询前的旧状态)
+    grid.innerHTML = "";
+    grid.append(
+      el("div", { class: "info-item" },
+        el("div", { class: "info-label" }, "容器名称"),
+        el("div", { class: "info-value" }, info.name)),
+      el("div", { class: "info-item" },
+        el("div", { class: "info-label" }, "镜像"),
+        el("div", { class: "info-value" }, info.image || "-")),
+      el("div", { class: "info-item" },
+        el("div", { class: "info-label" }, "状态"),
+        el("div", { class: "info-value" },
+          st.running ? "运行中" : `已停止 (${st.state || "-"})`)),
+      el("div", { class: "info-item" },
+        el("div", { class: "info-label" }, "测试执行"),
+        el("div", { class: "info-value" }, st.busy ? "测试执行中" : "空闲")));
     const btn = $("#executeStartBtn");
     if (st.busy) {
       banner.hidden = false;

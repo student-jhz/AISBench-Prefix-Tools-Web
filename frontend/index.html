@@ -312,7 +312,11 @@
               </div>
               <div class="form-item span-2">
                 <label>MODEL_PATH（模型权重路径）<em>*</em></label>
-                <input type="text" id="cfgModelPath" placeholder="/mnt/models/...">
+              <div class="input-group">
+                <input type="text" id="cfgModelPath" placeholder="/mnt/models/...（可点击右侧按钮从容器内目录选择）">
+                <button type="button" class="btn btn-outline btn-sm" id="cfgModelPathBrowseBtn">浏览容器目录</button>
+              </div>
+              <div class="hint-text">浏览的是所选容器内的目录 —— 选中的路径直接作为 MODEL_PATH 在容器内生效，无需换算宿主机路径</div>
               </div>
               <div class="form-item">
                 <label>HOST_IP（vLLM 服务 IP）<em>*</em></label>
