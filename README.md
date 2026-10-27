@@ -139,6 +139,10 @@ node tests/test_bootwatchdog.mjs
 python -m pyflakes backend/app tests
 ```
 
+> 前端 JS 均为 ES module：pytest 会自动以模块目标逐个解析校验（`tests/test_frontend_syntax.py`）。
+> 手动检查时注意 `node --check xx.js`（脚本目标）**不会**暴露"字符串内含真实换行"这类错误，
+> 必须复制为 `.mjs` 后检查：`cp xx.js /tmp/c.mjs && node --check /tmp/c.mjs`。
+
 ## 使用流程
 
 1. **连接**：步骤 1 输入执行机 SSH 信息（密码或上传密钥）

@@ -815,7 +815,11 @@
       // 强刷按钮: location.reload(true) 已废弃, 用带时间戳参数绕过缓存
       var forceBtn = document.getElementById("bootErrorForceBtn");
       if (forceBtn) forceBtn.addEventListener("click", function () {
-        location.href = pageUrl() + (location.search ? "&" : "?") +
+        // 先清除已有的 _bust 参数再追加(避免反复点击无限叠加)
+        var clean = pageUrl().replace(/([?&])_bust=\d+&?/g, function (m, p) {
+          return p === "?" && m.indexOf("&", m.length - 1) < 0 ? "?" : "";
+        });
+        location.href = clean + (clean.indexOf("?") >= 0 ? "&" : "?") +
           "_bust=" + Date.now();
       });
     })();

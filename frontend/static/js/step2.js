@@ -628,8 +628,7 @@ function renderCurrentGrid() {
   grid.innerHTML = "";
 
   const mounts = (info.model_mounts || [])
-    .map(m => `${m.host} → ${m.container}`).join("
-") || "-";
+    .map(m => `${m.host} → ${m.container}`).join("\n") || "-";
   grid.append(
     infoItem("容器名称", info.name),
     infoItem("镜像", info.image || "-"),

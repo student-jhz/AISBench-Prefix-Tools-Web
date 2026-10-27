@@ -47,6 +47,24 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
+      - name: 前端模块语法检查(阻断带伤发布)
+        shell: bash
+        run: |
+          # v2.0.4 守卫: 前端 JS 全部是 ES module, 必须按模块目标解析。
+          # 教训: node --check 对 .js(脚本目标)不会暴露"字符串内含真实换行"
+          # 这类错误, 曾因此带伤发布 v2.0.1~v2.0.3(浏览器 SyntaxError 白屏)。
+          mkdir -p /tmp/modcheck
+          fail=0
+          for f in frontend/static/js/*.js; do
+            cp "$f" /tmp/modcheck/check.mjs
+            if ! node --check /tmp/modcheck/check.mjs; then
+              echo "::error::语法错误: $f (浏览器将无法加载, 禁止发布)" >&2
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] && echo "所有前端模块语法检查通过"
+          exit $fail
+
       - name: 构建镜像
         run: docker build -t "${IMAGE_NAME}:${{ steps.ver.outputs.version }}" .
 
@@ -69,8 +87,12 @@ jobs:
           grep -qE 'import.*step[0-9]\.js' main.js
           for M in $(grep -oE 'from "\./[a-z0-9]+\.js"' main.js | sed 's/from "\.\///;s/"//'); do
             curl -fsS "http://127.0.0.1:8320/static/js/${M}" -o mod.js
-            grep -q 'export' mod.js
+            cp mod.js /tmp/smoke_mod.mjs
+            # 实际按 ES module 解析(与浏览器一致), 而非仅检查文件存在
+            node --check /tmp/smoke_mod.mjs
           done
+          cp main.js /tmp/smoke_main.mjs
+          node --check /tmp/smoke_main.mjs
           docker rm -f smoke
 
       - name: 导出镜像 tar
@@ -254,6 +276,12 @@ jobs:
           AISBench-Prefix-Tools-Web 网页版发布。
 
           将 Windows 桌面向导工具完整迁移为部署在执行机上的容器化 Web 服务, 浏览器访问 `http://<执行机IP>:8320` 即可完成 Prefix Cache 性能测试全流程。
+
+          ## ⚠️ v2.0.0 ~ v2.0.3 已全部撤回
+
+          这四个版本的前端 `step2.js` 存在语法错误(字符串字面量内被写入真实换行符), 浏览器加载时抛 `SyntaxError` 导致整站不可用; 当时本地与 CI 的 `node --check *.js`(脚本目标)检查无法暴露该类错误, 故连续带伤发布。**请务必使用 v2.0.4 及以上版本**; 已部署 2.0.x 的环境直接下载本版离线包重新部署即可。
+
+          v2.0.4 修复该语法错误, 并新增两道发布闸门: pytest 参数化用例(每个前端 JS 按 ES module 解析, 与浏览器同款语义) + CI 在镜像构建前与冒烟测试中实际解析全部模块, 此类问题今后无法再进入发版。
 
           ## 🆕 v2.0 多用户容器资源池(重大更新)
 
