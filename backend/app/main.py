@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.requests import Request
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -108,11 +108,25 @@ def create_app(ssh_manager=None, data_dir=None, ssh_factory=None) -> FastAPI:
     # 静态资源与首页
     static_dir = _base_dir() / "frontend" / "static"
     if static_dir.is_dir():
-        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-
         @app.get("/", include_in_schema=False)
         async def index():
-            return FileResponse(_base_dir() / "frontend" / "index.html")
+            # 入口页: 注入版本号作为静态资源缓存键(?v=), 并以 no-cache 提供。
+            # 升级部署后浏览器立即拿到新入口, 引用新版本化 URL 的 JS/CSS,
+            # 绝不会与旧缓存的同名文件混用(文件重命名/删除时尤为关键)。
+            html = (_base_dir() / "frontend" / "index.html").read_text(
+                encoding="utf-8")
+            html = html.replace("__APP_VERSION__", __version__)
+            return HTMLResponse(
+                html,
+                headers={
+                    "Cache-Control": "no-cache, must-revalidate",
+                    "ETag": f'W/"index-{__version__}"',
+                },
+            )
+
+        # StaticFiles 自带 ETag/Last-Modified 协商缓存; 入口页引用带 ?v=
+        # 的版本化 URL, 版本不变时命中缓存, 升级后 URL 变化自动取新文件。
+        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     return app
 

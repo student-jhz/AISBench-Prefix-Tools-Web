@@ -4,10 +4,23 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AISBench Prefix Tools - Web</title>
-  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/app.css?v=__APP_VERSION__">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧰</text></svg>">
 </head>
 <body>
+  <!-- 前端加载失败兜底: 用非 module 内联脚本检测, 模块图崩溃时给出可见提示
+       (否则所有 .view 都保持隐藏, 用户只会看到一片空白) -->
+  <div id="bootError" class="boot-error" hidden>
+    <div class="boot-error-card">
+      <div class="boot-error-title">⚠️ 界面加载失败</div>
+      <div class="boot-error-text">
+        前端脚本未能启动, 可能是浏览器缓存了旧版本文件(升级部署后新旧脚本混用导致冲突)。<br>
+        请<strong>强制刷新页面</strong>(Ctrl+F5 / Cmd+Shift+R); 若仍不行, 请清除本站点缓存后重试。
+      </div>
+      <button class="btn btn-primary" onclick="location.reload()">重新加载</button>
+    </div>
+  </div>
+
   <header class="topbar">
     <div class="topbar-brand">
       <span class="logo">🧰</span>
@@ -693,6 +706,16 @@
   <div id="toastContainer" class="toast-container"></div>
   <div id="modalRoot"></div>
 
-  <script type="module" src="/static/js/main.js"></script>
+  <script type="module" src="/static/js/main.js?v=__APP_VERSION__"></script>
+  <script>
+    // 兜底检测(非 module): 4 秒后若没有任何视图被激活, 说明 ES 模块图加载失败,
+    // 显示提示并给出强刷指引 —— 避免静默空白页。
+    setTimeout(() => {
+      if (!document.querySelector(".view.active")) {
+        const el = document.getElementById("bootError");
+        if (el) el.hidden = false;
+      }
+    }, 4000);
+  </script>
 </body>
 </html>

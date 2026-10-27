@@ -60,6 +60,17 @@ jobs:
           cat health.json; echo
           curl -fsS http://127.0.0.1:8320/ -o index.html
           grep -q "AISBench Prefix Tools" index.html
+          # 前端资源完整性: 入口引用的版本化 JS 必须真实存在且可加载
+          # (防止文件重命名/删除后入口引用悬空导致整页空白)
+          grep -q 'main.js?v=' index.html
+          grep -q 'id="bootError"' index.html
+          JS=$(grep -oE 'src="/static/js/main\.js\?v=[^"]+"' index.html | head -1 | sed 's/src="//;s/"$//')
+          curl -fsS "http://127.0.0.1:8320${JS}" -o main.js
+          grep -qE 'import.*step[0-9]\.js' main.js
+          for M in $(grep -oE 'from "\./[a-z0-9]+\.js"' main.js | sed 's/from "\.\///;s/"//'); do
+            curl -fsS "http://127.0.0.1:8320/static/js/${M}" -o mod.js
+            grep -q 'export' mod.js
+          done
           docker rm -f smoke
 
       - name: 导出镜像 tar

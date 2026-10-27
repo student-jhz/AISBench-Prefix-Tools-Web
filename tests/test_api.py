@@ -46,6 +46,30 @@ class TestSystem:
         assert r.status_code == 200
         assert r.json()["status"] == "ok"
 
+    def test_index_cache_busting(self, client):
+        """首页: 版本注入 + no-cache 头, 防止升级后浏览器沿用旧入口/旧脚本混载"""
+        c, _, _ = client
+        r = c.get("/")
+        assert r.status_code == 200
+        # 入口页禁止直接使用缓存(每次协商), 升级后浏览器立即拿到新入口
+        assert "no-cache" in r.headers.get("cache-control", "")
+        body = r.text
+        from app.version import __version__
+        # 静态资源 URL 带版本号(缓存键), 新旧版本资源永不混用
+        assert f"/static/js/main.js?v={__version__}" in body
+        assert f"/static/css/app.css?v={__version__}" in body
+        # 占位符必须被替换完毕
+        assert "__APP_VERSION__" not in body
+        # 加载失败兜底横幅存在(模块崩溃时可见提示而非空白页)
+        assert 'id="bootError"' in body
+
+    def test_static_assets_served(self, client):
+        c, _, _ = client
+        for path in ("/static/js/main.js", "/static/css/app.css",
+                     "/static/js/step2.js"):
+            r = c.get(path)
+            assert r.status_code == 200, path
+
     def test_state_initial(self, client):
         c, _, _ = client
         r = c.get("/api/state")
