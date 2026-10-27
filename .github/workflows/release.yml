@@ -264,6 +264,7 @@ jobs:
           - **Busy 感知**: 容器列表实时显示是否正在执行测试, busy 容器给出醒目警示并建议新建; 执行任务按容器分槽, 不同容器可并发、日志按容器隔离
           - **安全清理**: 按容器名逐个勾选删除, 绝不模糊/批量删除; 正在执行测试的容器自动跳过, 避免误伤他人任务
           - **修复执行日志不可见问题**: PTY CRLF 与前端进度条刷新逻辑叠加导致日志区在滚动但内容为空; 现已归一化换行并保留进度条单行刷新
+          - **修复升级后整页空白问题**: 入口页改为 no-cache 下发且静态资源 URL 带版本号, 升级部署后浏览器立即加载新版脚本, 不会与旧缓存混用; 万一前端加载失败也会显示明确的刷新指引而非空白页
           - 向导由 6 步精简为 **5 步**(容器准备合并原"文件与模型"+"Docker 部署")
 
           > ⚠️ **v2.0 为破坏性变更**: deploy/cleanup 等 API 请求格式变化, 容器名必须使用 `aisbench_` 前缀。老版本会话升级后请重新选择/创建容器。
@@ -309,8 +310,9 @@ jobs:
           EOF
           )
           if gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            echo "Release 已存在, 上传/覆盖产物"
+            echo "Release 已存在(可能是删 tag 遗留的 draft), 上传/覆盖产物并发布"
             gh release upload "$TAG" artifacts/* --clobber -R "$GITHUB_REPOSITORY"
+            gh release edit "$TAG" --draft=false --notes "$NOTES" -R "$GITHUB_REPOSITORY"
           else
             gh release create "$TAG" artifacts/* \
               --title "AISBench-Prefix-Tools-Web ${TAG}" \
