@@ -226,7 +226,7 @@ class DockerManager:
         曾导致镜像/容器列表解析为空(v2.0.1 修复)。
         """
         code, out, _ = self.ssh.execute(
-            "docker images --format '{{json .}}'"
+            "docker images --format '{{json .}}'", timeout=15
         )
         items: List[dict] = []
         if code != 0:
@@ -258,7 +258,7 @@ class DockerManager:
         使用 --format '{{json .}}' 逐行 JSON, 规避 \\t 转义问题(见 list_images)。
         """
         code, out, _ = self.ssh.execute(
-            "docker ps -a --format '{{json .}}'"
+            "docker ps -a --format '{{json .}}'", timeout=15
         )
         items: List[dict] = []
         if code != 0:
@@ -291,7 +291,7 @@ class DockerManager:
         用于避免多个测试任务同时占用同一容器互相干扰。
         """
         code, out, _ = self.ssh.execute(
-            f"docker top {name} -o pid,cmd 2>/dev/null")
+            f"docker top {name} -o pid,cmd 2>/dev/null", timeout=15)
         if code != 0:
             return False, ""
         for line in out.strip().splitlines()[1:]:
@@ -345,7 +345,7 @@ class DockerManager:
         (v2.0.1 修复)
         """
         code, out, _ = self.ssh.execute(
-            f"docker inspect {self._shquote(name)} 2>/dev/null")
+            f"docker inspect {self._shquote(name)} 2>/dev/null", timeout=15)
         if code != 0 or not out.strip():
             return None
         try:
@@ -563,7 +563,8 @@ class DockerManager:
         if not self.container_name:
             return False
         code, out, _ = self.ssh.execute(
-            f"docker ps --filter 'name=^{self.container_name}$' --format '{{{{.Status}}}}'"
+            f"docker ps --filter 'name=^{self.container_name}$' "
+            f"--format '{{{{.Status}}}}'", timeout=10
         )
         return "Up" in out
 

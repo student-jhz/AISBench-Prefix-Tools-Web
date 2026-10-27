@@ -11,6 +11,9 @@ import { initStep5 } from "./step5.js";
 import { initLogtools } from "./logtools.js";
 import { initCompare } from "./compare.js";
 
+// 模块图启动标记: index.html 的内联 watchdog 据此判断前端是否真正启动。
+// 放在模块顶层(所有 import 求值完成后) —— 任何模块加载/求值失败都到不了这里。
+window.__appBooted = true;
 
 /** 全局应用状态 */
 export const G = {
@@ -241,6 +244,10 @@ async function init() {
     });
   });
 
+  // v2.0.2: 先渲染首屏, 再等后端状态 —— 界面出现绝不依赖 /api/state 返回。
+  // 后端/SSH 慢(如正在 docker load)时页面依然立即可用, 状态稍后异步补齐。
+  showView("step1");
+
   await refreshState();
 
   // 恢复上次选择的容器(多用户: 每个浏览器记住自己的容器)
@@ -258,7 +265,6 @@ async function init() {
   // 常规状态轮询(低频)
   setInterval(() => refreshState({ silent: true }), 10000);
 
-  showView("step1");
 }
 
 init();

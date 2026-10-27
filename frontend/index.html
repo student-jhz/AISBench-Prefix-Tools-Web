@@ -14,10 +14,12 @@
     <div class="boot-error-card">
       <div class="boot-error-title">⚠️ 界面加载失败</div>
       <div class="boot-error-text">
-        前端脚本未能启动, 可能是浏览器缓存了旧版本文件(升级部署后新旧脚本混用导致冲突)。<br>
-        请<strong>强制刷新页面</strong>(Ctrl+F5 / Cmd+Shift+R); 若仍不行, 请清除本站点缓存后重试。
+        前端脚本未能启动。常见原因：<br>
+        ① 后端服务未就绪或正在处理长任务(如镜像加载)——请稍候，页面会自动恢复；<br>
+        ② 浏览器缓存了旧版本脚本——请<strong>强制刷新</strong>(Ctrl+F5 / Cmd+Shift+R)；<br>
+        ③ 后端进程异常——请查看服务日志并重启服务。
       </div>
-      <button class="btn btn-primary" onclick="location.reload()">重新加载</button>
+      <button class="btn btn-primary" onclick="location.reload()">重新加载页面</button>
     </div>
   </div>
 
@@ -712,14 +714,31 @@
 
   <script type="module" src="/static/js/main.js?v=__APP_VERSION__"></script>
   <script>
-    // 兜底检测(非 module): 4 秒后若没有任何视图被激活, 说明 ES 模块图加载失败,
-    // 显示提示并给出强刷指引 —— 避免静默空白页。
-    setTimeout(() => {
-      if (!document.querySelector(".view.active")) {
-        const el = document.getElementById("bootError");
-        if (el) el.hidden = false;
+    // ===== 前端启动自检(非 module, 供模块图崩溃时兜底) =====
+    // v2.0.2 重写: 旧版在 4s 时检查一次 ".view.active" 且永不撤销 —— 而 init()
+    // 会先 await /api/state 再渲染首屏, 后端/SSH 稍慢就会永久误报"界面加载失败",
+    // 刷新也无效(每次都再等一遍)。新版判定依据:
+    //   1. main.js 模块顶层设置 window.__appBooted —— 只有模块图真正加载并求值成功;
+    //   2. 首屏已渲染(main.js 已改为先渲染再等状态);
+    // 满足任一即判定启动成功, 并且自动隐藏提示(支持"先误报后启动成功"的恢复)。
+    window.__bootWatchdog = function () {
+      var el = document.getElementById("bootError");
+      if (!el) return;
+      if (window.__appBooted || document.querySelector(".view.active")) {
+        el.hidden = true;
+        return;
       }
-    }, 4000);
+      el.hidden = false;
+    };
+    // 脚本/CSS 资源加载失败(404/网络断)立即提示, 不必等轮询超时
+    window.addEventListener("error", function (ev) {
+      var tag = ev.target && ev.target.tagName;
+      if (tag === "SCRIPT" || tag === "LINK") window.__bootWatchdog();
+    }, true);
+    // 耐心轮询: 慢网络下模块可能数秒后才就绪; 期间一旦启动成功立即撤下提示
+    [3000, 5000, 8000, 12000, 20000].forEach(function (ms) {
+      setTimeout(window.__bootWatchdog, ms);
+    });
   </script>
 </body>
 </html>

@@ -132,6 +132,9 @@ python -m pytest tests/ -q
 # 前端日志组件测试（PTY \r\n 与进度条刷新场景）
 node tests/test_logconsole.mjs
 
+# 前端启动自检测试（慢启动/模块失败/脚本404 等场景）
+node tests/test_bootwatchdog.mjs
+
 # 静态检查
 python -m pyflakes backend/app tests
 ```

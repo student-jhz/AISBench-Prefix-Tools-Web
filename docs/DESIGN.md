@@ -29,6 +29,18 @@
 > SFTP 写入挂载目录失败）。现改为解析 `docker inspect` 标准 JSON 与 `--format '{{json .}}'`
 > 逐行输出，彻底规避分隔符转义问题。
 
+> v2.0.2 修复"界面加载失败"误报：旧版首屏渲染前 `await /api/state`，而该端点同步执行
+> `docker ps`/`docker top`（SSH 慢或长任务阻塞时数秒~分钟），4 秒启动自检只查一次且
+> 永不撤销 → 永久误报、刷新也无效。现：
+> - **首屏不依赖后端**：`showView()` 先渲染，状态异步补齐；`main.js` 模块顶层设置
+>   `window.__appBooted` 启动标记；
+> - **自检只在前端真失败时提示**：依据启动标记（而非 `.view.active`）判定，多轮
+   复查、启动成功自动隐藏、脚本 404 立即提示；
+> - **`/api/state` 零 SSH 往返**：运行状态取容器注册表、busy 取执行分槽，高频轮询
+>   始终毫秒级；跨用户实时检测仍由 `/api/containers/busy` 提供；
+> - **前端请求 30s 超时**（AbortController），SSH 阻塞不再让请求永远 pending；
+>   docker 状态类命令加 10–15s 短超时（原默认 300s）。
+
 ## 2. 总体架构
 
 ```
@@ -217,6 +229,7 @@ docker compose up -d --build
 | 核心单测 | TestDesigner 计算公式/预设过滤/调整系数；ConfigManager 生成/校验/解析；LogParser 样例日志解析与 CSV 生成；对比核心匹配/差值计算；KV 日志解析与命令构造 |
 | API 集成 | FakeSSH 注入：上传、设计器、配置预览、对比全流程、状态与步骤解锁；v2.0 新增容器池（列表/选择/busy 拦截/启动）、镜像三模式创建、按容器执行、按名清理（含非 aisbench 拒绝与 busy 跳过） |
 | 前端 | `node tests/test_logconsole.mjs`：LogConsole 对 PTY `\r\n`、跨 chunk 分片、孤立 `\r` 进度条、普通 `\n` 等场景的渲染正确性 |
+| 前端 | `node tests/test_bootwatchdog.mjs`：启动自检对已启动/首屏渲染/模块失败/慢启动恢复/脚本 404/非脚本资源错误等场景的判定正确性 |
 | 冒烟 | 应用启动、静态页面、WebSocket 握手 |
 
 ## 11. 里程碑

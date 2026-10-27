@@ -63,6 +63,36 @@ class TestSystem:
         # 加载失败兜底横幅存在(模块崩溃时可见提示而非空白页)
         assert 'id="bootError"' in body
 
+    def test_state_no_ssh_roundtrip(self, client, tmp_path):
+        """v2.0.2: /api/state 是高频轮询端点, 不做任何 SSH/docker 往返
+
+        曾因容器运行状态走 docker ps / docker top(SSH 慢或长任务阻塞时
+        耗时数秒~分钟), 前端首屏 init 被卡住, 启动自检误报"界面加载失败"。
+        """
+        c, ssh, _ = client
+        # 建立已选择且运行中的容器
+        connect_ssh(c)
+        ssh.containers["aisbench_state_fast"] = "Up 1 hour"
+        ssh.container_meta["aisbench_state_fast"] = {
+            "image": "aisbench:v1",
+            "binds": ["/mnt/model:/mnt/model"],
+        }
+        r = c.post("/api/containers/select",
+                   json={"name": "aisbench_state_fast"})
+        assert r.status_code == 200, r.text
+
+        ssh.exec_log.clear()
+        r = c.get("/api/state")
+        assert r.status_code == 200
+        data = r.json()
+        # 运行状态来自容器注册表(选择/创建时登记), 无需 SSH
+        assert data["container_running"] is True
+        # 关键断言: 状态轮询零 SSH 命令
+        assert ssh.exec_log == [], ssh.exec_log
+
+        # busy 来自本服务执行分槽(同样零 SSH)
+        assert data["container_busy"] is False
+
     def test_static_assets_served(self, client):
         c, _, _ = client
         for path in ("/static/js/main.js", "/static/css/app.css",

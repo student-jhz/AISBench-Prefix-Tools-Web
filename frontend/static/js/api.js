@@ -1,5 +1,9 @@
 /** API 客户端 */
 
+/** 常规 JSON 请求超时(毫秒): 防止后端/SSH 阻塞时请求永远 pending,
+ *  页面状态卡死 —— 超时后抛出可感知的错误并允许重试。 */
+const REQUEST_TIMEOUT_MS = 30000;
+
 class ApiError extends Error {
   constructor(message, status) {
     super(message);
@@ -15,7 +19,21 @@ async function request(method, url, body = null, options = {}) {
     init.headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);
   }
-  const resp = await fetch(url, init);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(),
+    options.timeout ?? REQUEST_TIMEOUT_MS);
+  let resp;
+  try {
+    init.signal = ctrl.signal;
+    resp = await fetch(url, init);
+  } catch (e) {
+    if (e.name === "AbortError") {
+      throw new ApiError("请求超时: 后端可能正忙(如镜像加载/测试执行), 请稍后重试", 0);
+    }
+    throw new ApiError(`网络错误: ${e.message || e}`, 0);
+  } finally {
+    clearTimeout(timer);
+  }
   let data = null;
   try { data = await resp.json(); } catch { /* ignore */ }
   if (!resp.ok) {
