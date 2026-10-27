@@ -86,7 +86,7 @@ export function initStep1() {
       });
       setMsg(msgEl, data.message, "ok");
       toast("SSH 连接成功", "success");
-      // 记录主机IP供步骤2/4使用
+      // 记录主机IP供步骤3配置默认HOST_IP使用
       G.form.host = host;
       await refreshState();
       // 自动进入下一步

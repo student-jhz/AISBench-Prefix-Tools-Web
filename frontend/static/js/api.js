@@ -101,13 +101,27 @@ export class LogSocket {
     this.ws = null;
     this.closed = false;
     this.retryDelay = 1000;
+    this.channels = "deploy,exec";
     this.connect();
+  }
+
+  /**切换订阅通道(如按当前容器切换 exec@<容器名>), 自动重连 */
+  setChannels(channels) {
+    if (this.channels === channels) return;
+    this.channels = channels;
+    if (this.ws) {
+      this.closed = true;   // 防止 onclose 触发旧连接重连
+      this.ws.close();
+      this.closed = false;
+      this.connect();
+    }
   }
 
   connect() {
     if (this.closed) return;
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    this.ws = new WebSocket(`${proto}://${location.host}/ws/logs`);
+    this.ws = new WebSocket(
+      `${proto}://${location.host}/ws/logs?channels=${encodeURIComponent(this.channels)}`);
     this.ws.onopen = () => {
       this.retryDelay = 1000;
       if (this.onStatus) this.onStatus(true);

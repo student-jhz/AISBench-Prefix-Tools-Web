@@ -303,10 +303,11 @@ class TestDeployFlow:
             upload = c.post("/api/upload/image",
                             files={"file": ("img.tar", f, "application/x-tar")}).json()
 
-        # 启动部署(内置代码)
+        # 创建容器(上传镜像 + 内置代码)
         r = c.post("/api/deploy/start", json={
             "image": {"type": "upload", "upload_id": upload["id"]},
-            "model_path": "/mnt/models/ds",
+            "model_mount": "/mnt/models/ds",
+            "container_name": "aisbench_user1_vllm",
             "work_dir": "/tmp/AISBench_Prefix_Tools",
             "code": {"source": "builtin"},
         })
@@ -315,13 +316,14 @@ class TestDeployFlow:
         status = wait_task(c, "deploy")
         assert status["status"] == "done", status
         result = status["result"]
-        assert result["container_name"].startswith("aisbench-test-")
+        assert result["container_name"] == "aisbench_user1_vllm"
         assert result["image_name"] == "aisbench:test"
         assert result["model_path"] == "/mnt/models/ds"
+        assert result["source"] == "created"
 
         # 状态聚合
         state = c.get("/api/state").json()
-        assert state["steps"]["deployed"] is True
+        assert state["steps"]["container_selected"] is True
         assert state["container_running"] is True
 
         # 内置代码已上传到远程
@@ -337,9 +339,78 @@ class TestDeployFlow:
         c, _, _ = client
         r = c.post("/api/deploy/start", json={
             "image": {"type": "upload", "upload_id": "x"},
-            "model_path": "/m", "work_dir": "/tmp/x",
+            "model_mount": "/m", "container_name": "aisbench_x",
+            "work_dir": "/tmp/x",
         })
         assert r.status_code == 400
+
+    def test_deploy_invalid_container_name(self, client):
+        """容器名必须 aisbench_ 前缀(多用户共享执行机的命名约定)"""
+        c, _, _ = client
+        connect_ssh(c)
+        for bad in ["mybox", "aisbench-", "aisbench_", "aisbench_中文",
+                    "aisbench_a$b", "AISBENCH_upper"]:
+            r = c.post("/api/deploy/start", json={
+                "image": {"type": "existing", "name": "aisbench:test"},
+                "model_mount": "/mnt/models", "container_name": bad,
+            })
+            assert r.status_code == 400, bad
+
+    def test_deploy_existing_image_no_upload(self, client):
+        """选择执行机已有镜像: 无需上传/加载 tar 包"""
+        c, ssh, _ = client
+        connect_ssh(c)
+        ssh.images.add("aisbench:v2")
+
+        r = c.post("/api/deploy/start", json={
+            "image": {"type": "existing", "name": "aisbench:v2"},
+            "model_mount": "/mnt/models",
+            "container_name": "aisbench_user2_existing",
+            "work_dir": "/tmp/AISBench_Prefix_Tools",
+        })
+        assert r.status_code == 200, r.text
+        status = wait_task(c, "deploy")
+        assert status["status"] == "done", status
+        # 没有任何 docker load 动作
+        assert not any("docker load" in cmd for cmd in ssh.exec_log)
+
+    def test_deploy_existing_image_missing(self, client):
+        """所选镜像不存在时报错"""
+        c, _, _ = client
+        connect_ssh(c)
+        r = c.post("/api/deploy/start", json={
+            "image": {"type": "existing", "name": "aisbench:none"},
+            "model_mount": "/mnt/models", "container_name": "aisbench_x1",
+        })
+        assert r.status_code == 200
+        status = wait_task(c, "deploy")
+        assert status["status"] == "error"
+        assert "镜像不存在" in status["error"]
+
+    def test_deploy_container_name_conflict(self, client, tmp_path):
+        """同名容器冲突时报错, 绝不覆盖删除他人容器"""
+        c, ssh, _ = client
+        connect_ssh(c)
+        ssh.containers["aisbench_shared_box"] = "Up 1 hour"
+        ssh.container_meta["aisbench_shared_box"] = {
+            "image": "other:latest", "binds": []}
+
+        tar_path = tmp_path / "img.tar"
+        make_image_tar(str(tar_path))
+        with open(tar_path, "rb") as f:
+            upload = c.post("/api/upload/image",
+                            files={"file": ("img.tar", f, "application/x-tar")}).json()
+        r = c.post("/api/deploy/start", json={
+            "image": {"type": "upload", "upload_id": upload["id"]},
+            "model_mount": "/mnt/models/ds",
+            "container_name": "aisbench_shared_box",
+        })
+        assert r.status_code == 200
+        status = wait_task(c, "deploy")
+        assert status["status"] == "error"
+        assert "已被占用" in status["error"]
+        # 原容器未被删除
+        assert "aisbench_shared_box" in ssh.containers
 
     def test_deploy_image_dedup(self, client, tmp_path):
         """镜像已存在时跳过上传加载"""
@@ -355,7 +426,8 @@ class TestDeployFlow:
 
         r = c.post("/api/deploy/start", json={
             "image": {"type": "upload", "upload_id": upload["id"]},
-            "model_path": "/mnt/models/ds",
+            "model_mount": "/mnt/models/ds",
+            "container_name": "aisbench_dedup_test",
             "work_dir": "/tmp/AISBench_Prefix_Tools",
         })
         assert r.status_code == 200
@@ -363,6 +435,104 @@ class TestDeployFlow:
         assert status["status"] == "done"
         # 没有 docker load 命令被执行
         assert not any("docker load" in cmd for cmd in ssh.exec_log)
+
+
+class TestContainersAPI:
+    """v2.0 容器资源池: 列出/选择/启动/忙碌检测"""
+
+    def _create(self, c, tmp_path, name="aisbench_pool_a"):
+        connect_ssh(c)
+        tar_path = tmp_path / "img.tar"
+        make_image_tar(str(tar_path))
+        with open(tar_path, "rb") as f:
+            upload = c.post("/api/upload/image",
+                            files={"file": ("img.tar", f, "application/x-tar")}).json()
+        r = c.post("/api/deploy/start", json={
+            "image": {"type": "upload", "upload_id": upload["id"]},
+            "model_mount": "/mnt/models/ds",
+            "container_name": name,
+            "work_dir": "/tmp/AISBench_Prefix_Tools",
+        })
+        assert r.status_code == 200, r.text
+        return wait_task(c, "deploy")
+
+    def test_list_and_select(self, client, tmp_path):
+        c, ssh, _ = client
+        connect_ssh(c)
+        r = c.get("/api/containers/list")
+        assert r.status_code == 200
+        assert r.json()["containers"] == []
+
+        self._create(c, tmp_path, "aisbench_pool_a")
+        # 他人创建的非 aisbench 容器不可见
+        ssh.containers["nginx-proxy"] = "Up 2 hours"
+
+        r = c.get("/api/containers/list")
+        items = r.json()["containers"]
+        assert [x["name"] for x in items] == ["aisbench_pool_a"]
+        assert items[0]["running"] is True
+        assert items[0]["busy"] is False
+
+        # 选择已有容器(无需重新创建)
+        r = c.post("/api/containers/select", json={"name": "aisbench_pool_a"})
+        assert r.status_code == 200
+        data = r.json()
+        assert data["selected"] is True
+        info = data["info"]
+        assert info["name"] == "aisbench_pool_a"
+        assert info["running"] is True
+        assert info["model_mounts"] == [{"host": "/mnt/models/ds",
+                                         "container": "/mnt/models/ds"}]
+        assert "aisbench_auto_tools_prefix" in info["code_mount_path"]
+        # 已登记为当前容器
+        state = c.get("/api/state").json()
+        assert state["deploy"]["container_name"] == "aisbench_pool_a"
+        assert state["deploy"]["source"] == "selected"
+
+    def test_select_busy_container_requires_force(self, client, tmp_path):
+        """正在执行测试的容器: 默认拒绝选择, force 后允许"""
+        c, ssh, _ = client
+        self._create(c, tmp_path, "aisbench_busy_box")
+        ssh.busy_containers.add("aisbench_busy_box")
+
+        r = c.post("/api/containers/select", json={"name": "aisbench_busy_box"})
+        data = r.json()
+        assert data["selected"] is False
+        assert data["busy"] is True
+        assert "run_tests.sh" in data["busy_detail"]
+
+        r = c.post("/api/containers/select",
+                   json={"name": "aisbench_busy_box", "force": True})
+        assert r.json()["selected"] is True
+
+    def test_select_missing_container(self, client):
+        c, _, _ = client
+        connect_ssh(c)
+        r = c.post("/api/containers/select", json={"name": "aisbench_none"})
+        assert r.status_code == 400
+
+    def test_select_rejects_non_aisbench(self, client):
+        c, _, _ = client
+        connect_ssh(c)
+        r = c.post("/api/containers/select", json={"name": "nginx-proxy"})
+        assert r.status_code == 400
+
+    def test_start_stopped_container(self, client, tmp_path):
+        c, ssh, _ = client
+        self._create(c, tmp_path, "aisbench_stopped_box")
+        ssh.containers["aisbench_stopped_box"] = "Exited (0) 5 seconds ago"
+
+        r = c.post("/api/containers/start", json={"name": "aisbench_stopped_box"})
+        assert r.status_code == 200
+        assert ssh.containers["aisbench_stopped_box"].startswith("Up")
+
+    def test_list_images(self, client):
+        c, ssh, _ = client
+        connect_ssh(c)
+        ssh.images.update({"aisbench:v1", "ubuntu:22.04"})
+        r = c.get("/api/containers/images")
+        names = {img["name"] for img in r.json()["images"]}
+        assert names == {"aisbench:v1", "ubuntu:22.04"}
 
 
 class TestConfigAPI:
@@ -392,7 +562,7 @@ class TestConfigAPI:
     def test_config_save_and_verify(self, client, tmp_path):
         c, ssh, _ = client
         connect_ssh(c)
-        # 先部署
+        # 先创建容器
         tar_path = tmp_path / "img.tar"
         make_image_tar(str(tar_path))
         with open(tar_path, "rb") as f:
@@ -400,7 +570,8 @@ class TestConfigAPI:
                             files={"file": ("img.tar", f, "application/x-tar")}).json()
         c.post("/api/deploy/start", json={
             "image": {"type": "upload", "upload_id": upload["id"]},
-            "model_path": "/mnt/models/ds",
+            "model_mount": "/mnt/models/ds",
+            "container_name": "aisbench_cfg_box",
             "work_dir": "/tmp/AISBench_Prefix_Tools",
         })
         wait_task(c, "deploy")
@@ -426,6 +597,30 @@ class TestConfigAPI:
         assert r.status_code == 200
         assert r.json()["fields"]["MODEL_PATH"] == "/mnt/models/ds"
 
+    def test_config_with_explicit_container(self, client, tmp_path):
+        """显式指定容器: 多用户各用各的容器, 互不干扰"""
+        c, ssh, _ = client
+        connect_ssh(c)
+        for name in ("aisbench_user_a", "aisbench_user_b"):
+            ssh.containers[name] = "Up 1 second"
+            ssh.container_meta[name] = {
+                "image": "aisbench:test",
+                "binds": ["/mnt/models:/mnt/models",
+                          f"/tmp/w/{name}:/benchmark/ais_bench/aisbench_auto_tools_prefix-main"],
+            }
+
+        config = {"model_name": "ds", "model_path": "/mnt/models/ds",
+                  "host_ip": "10.0.0.1", "host_port": "8000"}
+        r = c.post("/api/config/save",
+                   json={"config": config, "container": "aisbench_user_b"})
+        assert r.status_code == 200, r.text
+        # 写入的是 user_b 容器的代码挂载目录
+        assert "/tmp/w/aisbench_user_b/config.py" in ssh.files
+
+        r = c.get("/api/config/read?container=aisbench_user_b")
+        assert r.status_code == 200
+        assert r.json()["fields"]["MODEL_PATH"] == "/mnt/models/ds"
+
     def test_config_save_requires_deploy(self, client):
         c, _, _ = client
         r = c.post("/api/config/save", json={"config": {}})
@@ -442,7 +637,8 @@ class TestExecuteFlow:
                             files={"file": ("img.tar", f, "application/x-tar")}).json()
         r = c.post("/api/deploy/start", json={
             "image": {"type": "upload", "upload_id": upload["id"]},
-            "model_path": "/mnt/models/ds",
+            "model_mount": "/mnt/models/ds",
+            "container_name": "aisbench_exec_box",
             "work_dir": "/tmp/AISBench_Prefix_Tools",
         })
         assert r.status_code == 200
@@ -463,10 +659,18 @@ class TestExecuteFlow:
                 "repeat_rate": 0.9, "dp": 4, "is_custom": False,
             }],
         }
-        r = c.post("/api/execute/start", json={"designer": designer, "run_name": "smoke"})
+        r = c.post("/api/execute/start", json={
+            "designer": designer, "run_name": "smoke",
+            "container": "aisbench_exec_box",
+        })
         assert r.status_code == 200, r.text
         run_id = r.json()["run_id"]
         assert "smoke" in run_id
+
+        # 指定容器查询状态
+        r = c.get("/api/execute/status?container=aisbench_exec_box")
+        assert r.status_code == 200
+        assert r.json()["key"] == "aisbench_exec_box"
 
         status = wait_task(c, "execute", timeout=15)
         assert status["status"] == "done", status
@@ -502,19 +706,67 @@ class TestExecuteFlow:
         r = c.post("/api/execute/start", json={"designer": {"cases": []}})
         assert r.status_code == 400
 
+    def test_execute_busy_container_rejected(self, client, tmp_path):
+        """正在执行测试的容器拒绝启动新任务(保护并发测试互不干扰)"""
+        c, ssh, _ = client
+        self._deploy(c, tmp_path)
+        ssh.busy_containers.add("aisbench_exec_box")
+
+        r = c.post("/api/execute/start", json={
+            "designer": {"cases": [{"input_len": 8192, "output_len": 512,
+                                    "data_num_recommended": 10,
+                                    "concurrency_recommended": 5}]},
+            "container": "aisbench_exec_box",
+        })
+        assert r.status_code == 400
+        assert "正在执行测试" in r.json()["detail"]
+
     def test_cleanup(self, client, tmp_path):
         c, ssh, _ = client
         self._deploy(c, tmp_path)
 
-        r = c.post("/api/cleanup", json={"remove_container": True,
-                                         "clean_work_dir": True})
+        # 按名称清理指定容器(aisbench_exec_box 由 _deploy 创建)
+        # 另一个无关容器不应被删除
+        ssh.containers["aisbench_other_user"] = "Up 1 hour"
+        ssh.container_meta["aisbench_other_user"] = {"image": "x:1", "binds": []}
+
+        r = c.post("/api/cleanup", json={
+            "containers": ["aisbench_exec_box"],
+            "clean_work_dir": True,
+            "work_dir": "/tmp/AISBench_Prefix_Tools",
+        })
         assert r.status_code == 200
         status = wait_task(c, "cleanup")
         assert status["status"] == "done"
+        assert status["result"]["removed"] == ["aisbench_exec_box"]
+        # 未勾选的容器不受影响
+        assert "aisbench_exec_box" not in ssh.containers
+        assert "aisbench_other_user" in ssh.containers
 
         # 部署信息已重置
         state = c.get("/api/state").json()
         assert state["deploy"] is None
+
+    def test_cleanup_rejects_non_aisbench(self, client):
+        """拒绝清理非 aisbench 前缀容器(他人/其他业务容器)"""
+        c, _, _ = client
+        connect_ssh(c)
+        r = c.post("/api/cleanup", json={"containers": ["nginx-proxy"]})
+        assert r.status_code == 400
+
+    def test_cleanup_skips_busy_container(self, client, tmp_path):
+        """正在执行测试的容器会被跳过, 不误伤他人任务"""
+        c, ssh, _ = client
+        self._deploy(c, tmp_path)
+        ssh.busy_containers.add("aisbench_exec_box")
+
+        r = c.post("/api/cleanup", json={"containers": ["aisbench_exec_box"]})
+        assert r.status_code == 200
+        status = wait_task(c, "cleanup")
+        assert status["status"] == "done"
+        assert status["result"]["removed"] == []
+        assert status["result"]["skipped"] == ["aisbench_exec_box"]
+        assert "aisbench_exec_box" in ssh.containers
 
     def test_delete_run(self, client, tmp_path):
         c, _, _ = client

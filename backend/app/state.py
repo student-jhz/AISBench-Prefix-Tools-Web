@@ -1,8 +1,9 @@
-"""全局会话状态 - 与桌面版单实例模型一致"""
+"""全局会话状态 - SSH 连接共享 + 多用户容器资源池"""
 
 import json
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -20,6 +21,7 @@ class DeployInfo:
     model_path: str = ""
     work_dir: str = ""
     deployed_at: str = ""
+    source: str = "created"  # created=本服务创建 / selected=选择已有容器
 
     def to_dict(self) -> dict:
         return {
@@ -30,6 +32,7 @@ class DeployInfo:
             "model_path": self.model_path,
             "work_dir": self.work_dir,
             "deployed_at": self.deployed_at,
+            "source": self.source,
         }
 
 
@@ -52,6 +55,9 @@ class AppState:
         self.ssh_factory = ssh_factory or SSHManager
         self.docker: Optional[DockerManager] = None
         self.deploy_info: Optional[DeployInfo] = None
+        # 容器资源池注册表: name -> inspect 信息(选择/创建时登记)
+        # 多用户各自选择不同容器, 请求中显式携带容器名, 互不干扰
+        self.containers: dict = {}
         self.logtools_other_ssh: Optional[SSHManager] = None
 
         # 连接/部署互斥锁
@@ -144,6 +150,7 @@ class AppState:
                     model_path=deploy.get("model_path", ""),
                     work_dir=deploy.get("work_dir", ""),
                     deployed_at=deploy.get("deployed_at", ""),
+                    source=deploy.get("source", "created"),
                 )
                 docker = DockerManager(self.ssh)
                 docker.container_name = info.container_name
@@ -154,6 +161,20 @@ class AppState:
                 with self.lock:
                     self.docker = docker
                     self.deploy_info = info
+                    self.containers[info.container_name] = {
+                        "name": info.container_name,
+                        "image": info.image_name,
+                        "state": "unknown",
+                        "running": False,
+                        "mounts": [],
+                        "code_host_path": info.code_host_path,
+                        "code_mount_path": info.code_mount_path,
+                        "model_mounts": ([{"host": info.model_path,
+                                           "container": info.model_path}]
+                                         if info.model_path else []),
+                        "model_path_hint": info.model_path,
+                        "work_dir": info.work_dir,
+                    }
 
         threading.Thread(target=_worker, daemon=True,
                          name="session-restore").start()
@@ -182,11 +203,77 @@ class AppState:
 
     def require_deploy(self) -> DockerManager:
         if not self.docker or not self.deploy_info:
-            raise RuntimeError("请先完成 Docker 部署 (步骤 3)")
+            raise RuntimeError("请先在步骤 2 选择或创建测试容器")
         return self.docker
+
+    # ------------------------------------------------------------ 容器资源池
+
+    def register_container(self, info: dict, source: str = "selected"):
+        """登记容器信息(选择已有容器 / 创建新容器后调用)
+
+        同时刷新服务端"当前容器"(deploy_info), 用于未显式携带容器名的
+        兼容请求; 多用户场景下前端始终显式传递各自选择的容器名。
+        """
+        name = info.get("name", "")
+        with self.lock:
+            self.containers[name] = dict(info)
+            self.deploy_info = DeployInfo(
+                container_name=name,
+                image_name=info.get("image", ""),
+                code_host_path=info.get("code_host_path", ""),
+                code_mount_path=info.get("code_mount_path")
+                or "/benchmark/ais_bench/aisbench_auto_tools_prefix-main",
+                model_path=info.get("model_path_hint", "")
+                or (info.get("model_mounts") or [{}])[0].get("container", ""),
+                work_dir=info.get("work_dir", ""),
+                deployed_at=datetime.now().isoformat(timespec="seconds"),
+                source=source,
+            )
+            self.docker = self._build_docker(self.deploy_info)
+        self.save_session(deploy_info=self.deploy_info.to_dict())
+        return self.deploy_info
+
+    def resolve_container(self, name: str) -> dict:
+        """解析容器信息: 注册表优先, 否则现场 docker inspect 并登记"""
+        name = (name or "").strip()
+        if not name:
+            raise RuntimeError("未指定容器")
+        with self.lock:
+            info = self.containers.get(name)
+        if info:
+            return info
+        docker = DockerManager(self.require_ssh())
+        info = docker.inspect_container(name)
+        if not info:
+            raise RuntimeError(f"容器不存在或无法读取信息: {name}")
+        self.register_container(info, source="selected")
+        return self.containers[name]
+
+    def docker_for_container(self, name: str) -> DockerManager:
+        """获取指向指定容器的 DockerManager(供 config/execute 等操作)"""
+        info = self.resolve_container(name)
+        docker = DockerManager(self.require_ssh())
+        docker.container_name = info["name"]
+        docker.image_name = info.get("image", "")
+        docker.code_host_path = info.get("code_host_path", "")
+        docker.code_mount_path = info.get("code_mount_path") or docker.code_mount_path
+        docker.remote_work_base = (info.get("work_dir")
+                                   or "/tmp/AISBench_Prefix_Tools")
+        return docker
+
+    def _build_docker(self, info: DeployInfo) -> DockerManager:
+        docker = DockerManager(self.ssh)
+        docker.container_name = info.container_name
+        docker.image_name = info.image_name
+        docker.code_host_path = info.code_host_path
+        docker.code_mount_path = info.code_mount_path
+        docker.remote_work_base = info.work_dir or "/tmp/AISBench_Prefix_Tools"
+        return docker
 
     def reset_deploy(self):
         """部署信息重置(断开连接/清理环境后)"""
+        if self.deploy_info and self.deploy_info.container_name:
+            self.containers.pop(self.deploy_info.container_name, None)
         self.docker = None
         self.deploy_info = None
         # 同步清除持久化会话中的部署信息

@@ -1,6 +1,9 @@
-"""后台任务管理 - 部署/执行/清理三类长任务
+"""后台任务管理 - 容器创建/测试执行/清理三类长任务
 
-对应桌面版 main.py 中的 _deploy_sequence / _run_test_sequence / _cleanup_environment。
+v2.0: 多用户容器资源池模型
+- deploy:   创建新容器(镜像可来自执行机已有镜像/tar上传/远程tar)
+- execute:  按容器名分槽并发(不同容器可同时执行测试, 日志通道 exec@容器名)
+- cleanup:  按显式指定的容器名列表清理, 绝不模糊删除
 """
 
 import os
@@ -11,11 +14,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
-from .core.docker_manager import DockerManager
+from .core.docker_manager import (
+    DockerManager,
+    is_managed_container_name,
+    validate_container_name,
+)
 from .core.log_parser import parse_log_directory
 from .core.test_designer import TestDesigner
 from .logbus import LogBus
-from .state import AppState, DeployInfo
+from .state import AppState
 
 
 TASK_KINDS = ("deploy", "execute", "cleanup")
@@ -25,6 +32,7 @@ TASK_KINDS = ("deploy", "execute", "cleanup")
 class TaskRun:
     """一次后台任务执行"""
     kind: str
+    key: str = ""   # execute 任务: 容器名
     status: str = "running"  # running / done / error / cancelled
     phase: str = ""
     error: str = ""
@@ -37,6 +45,7 @@ class TaskRun:
     def to_dict(self) -> dict:
         return {
             "kind": self.kind,
+            "key": self.key,
             "running": self.status == "running",
             "status": self.status,
             "phase": self.phase,
@@ -52,17 +61,22 @@ class TaskCancelled(Exception):
 
 
 class TaskManager:
-    """管理三类后台任务, 同一时刻每类仅允许一个"""
+    """管理三类后台任务; execute 按容器分槽, 不同容器可并发执行"""
 
     def __init__(self, bus: LogBus, state: AppState):
         self.bus = bus
         self.state = state
         self._tasks: dict = {kind: None for kind in TASK_KINDS}
+        # execute 任务按容器名分槽: 容器 -> TaskRun
+        self._exec_tasks: dict = {}
+        self._last_exec: Optional[TaskRun] = None
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------ 任务控制
 
     def status(self, kind: str) -> dict:
+        if kind == "execute":
+            return self.exec_status()
         with self._lock:
             task = self._tasks.get(kind)
         if task is None:
@@ -71,15 +85,54 @@ class TaskManager:
         return task.to_dict()
 
     def is_running(self, kind: str) -> bool:
+        if kind == "execute":
+            with self._lock:
+                return any(t.status == "running"
+                           for t in self._exec_tasks.values())
         return self.status(kind)["running"]
 
     def cancel(self, kind: str) -> bool:
+        if kind == "execute":
+            return self.cancel_execute()
         with self._lock:
             task = self._tasks.get(kind)
         if task is None or task.status != "running":
             return False
         task.cancel_event.set()
         # 主动中断正在执行的远程命令
+        self.state.ssh.cancel_active()
+        return True
+
+    # ------------------------------------------------------------ 执行任务(按容器分槽)
+
+    def exec_status(self, container: str = "") -> dict:
+        """执行任务状态: 指定容器返回该容器任务, 否则返回最近一次"""
+        with self._lock:
+            task = (self._exec_tasks.get(container)
+                    if container else self._last_exec)
+            running_containers = sorted(
+                name for name, t in self._exec_tasks.items()
+                if t.status == "running")
+        if task is None:
+            return {"kind": "execute", "key": container, "running": False,
+                    "status": "idle", "phase": "", "error": "", "result": {},
+                    "running_containers": running_containers}
+        data = task.to_dict()
+        data["running_containers"] = running_containers
+        return data
+
+    def is_executing(self, container: str) -> bool:
+        with self._lock:
+            task = self._exec_tasks.get(container)
+            return bool(task and task.status == "running")
+
+    def cancel_execute(self, container: str = "") -> bool:
+        with self._lock:
+            task = (self._exec_tasks.get(container)
+                    if container else self._last_exec)
+        if task is None or task.status != "running":
+            return False
+        task.cancel_event.set()
         self.state.ssh.cancel_active()
         return True
 
@@ -130,7 +183,8 @@ class TaskManager:
 
         ssh = state.require_ssh()
 
-        model_path = params["model_path"].strip()
+        model_mount = params["model_mount"].strip()
+        container_name = params["container_name"].strip()
         work_dir = params["work_dir"].strip() or "/tmp/AISBench_Prefix_Tools"
         image = params.get("image") or {}
         code = params.get("code") or {}
@@ -139,24 +193,35 @@ class TaskManager:
         docker.remote_work_base = work_dir
         state.docker = docker
 
-        # ===== [1/4] 检查Docker环境 =====
+        # ===== [1/5] 检查Docker环境 =====
         task.phase = "检查Docker环境"
-        log("[1/4] 检查Docker环境...\n")
+        log("[1/5] 检查Docker环境...\n")
         ok, msg = docker.check_docker_installed()
         if not ok:
             raise RuntimeError(msg)
         log(f"  ✓ {msg}\n\n")
         self._check_cancel(task, ch)
 
-        # ===== [2/4] 镜像检查/上传/加载 =====
+        # ===== [2/5] 准备镜像: 已有镜像直接使用, 缺失才上传/加载 =====
         task.phase = "准备镜像"
-        log("[2/4] 检查镜像是否已存在...\n")
+        log("[2/5] 准备镜像...\n")
         ssh.mkdir_p(work_dir)
 
         image_name = None
         local_tar_path = None
         remote_tar_path = ""
-        if image.get("type") == "remote":
+        if image.get("type") == "existing":
+            image_name = (image.get("name") or "").strip()
+            if not image_name:
+                raise RuntimeError("未指定镜像名")
+            log(f"  使用执行机已有镜像: {image_name}\n")
+            if not docker.image_exists(image_name):
+                raise RuntimeError(
+                    f"镜像不存在: {image_name}\n"
+                    f"  请刷新镜像列表重新选择, 或切换为\"上传tar包/远程tar包\"加载")
+            log("  ✓ 镜像已就绪\n\n")
+            self._check_cancel(task, ch)
+        elif image.get("type") == "remote":
             remote_tar = image.get("remote_path", "").strip()
             if not remote_tar:
                 raise RuntimeError("未提供远程镜像 tar 路径")
@@ -178,7 +243,9 @@ class TaskManager:
                 log(f"  从 tar 包 manifest 识别到镜像: {image_name}\n")
             remote_tar_path = f"{work_dir}/{os.path.basename(local_tar_path)}"
 
-        if image_name and docker.image_exists(image_name):
+        if image.get("type") == "existing":
+            pass  # 已有镜像, 上面已校验
+        elif image_name and docker.image_exists(image_name):
             log(f"  ✓ 镜像 {image_name} 已存在, 跳过上传与加载\n\n")
         else:
             if image_name:
@@ -215,13 +282,13 @@ class TaskManager:
 
         self._check_cancel(task, ch)
 
-        # ===== [3/4] 上传测试代码 =====
+        # ===== [3/5] 上传测试代码 =====
         task.phase = "上传测试代码"
         if code.get("source") == "zip":
             zip_path = _resolve_upload(state, code.get("zip_upload_id", ""))
             if not zip_path:
                 raise RuntimeError("未提供代码 zip 包")
-            log("[3/4] 上传并解压代码zip包...\n")
+            log("[3/5] 上传并解压代码zip包...\n")
             zip_name = os.path.basename(zip_path)
             remote_zip = f"{work_dir}/{zip_name}"
             if not ssh.upload_file(zip_path, remote_zip):
@@ -231,7 +298,7 @@ class TaskManager:
             if not ok:
                 raise RuntimeError("代码解压失败")
         else:
-            log("[3/4] 上传内置测试代码...\n")
+            log("[3/5] 上传内置测试代码...\n")
             extracted_path = f"{work_dir}/aisbench_auto_tools_prefix-main"
             ok, msg = docker.upload_directory(str(core_code_dir), extracted_path,
                                               callback=log)
@@ -242,45 +309,88 @@ class TaskManager:
         log(f"  ✓ 代码已就绪: {extracted_path}\n\n")
         self._check_cancel(task, ch)
 
-        # ===== [4/4] 创建并启动容器 =====
+        # ===== [4/5] 校验容器名 =====
+        task.phase = "校验容器名"
+        log(f"[4/5] 校验容器名: {container_name}\n")
+        err = validate_container_name(container_name)
+        if err:
+            raise RuntimeError(err)
+        if docker.container_exists(container_name):
+            raise RuntimeError(
+                f"容器名已被占用: {container_name}\n"
+                f"  请换一个名称, 或先在\"容器管理\"中删除该容器")
+        log("  ✓ 名称可用\n\n")
+        self._check_cancel(task, ch)
+
+        # ===== [5/5] 创建并启动容器 =====
         task.phase = "创建并启动容器"
-        log("[4/4] 创建并启动容器...\n")
-        container_name = docker.generate_container_name()
+        log("[5/5] 创建并启动容器...\n")
+        log(f"  模型目录映射: {model_mount} -> {model_mount} (容器内同路径)\n")
         ok, msg = docker.create_container(
-            image_name, model_path, code_host_path, container_name, callback=log)
+            image_name, model_mount, code_host_path, container_name, callback=log)
         if not ok:
             raise RuntimeError(msg)
 
         log(f"\n  ✓ 容器 {container_name} 已启动运行\n")
-        log("  ✓ 部署完成!\n")
+        log("  ✓ 容器创建完成! (后续步骤均可直接使用该容器)\n")
 
-        state.deploy_info = DeployInfo(
-            container_name=container_name,
-            image_name=image_name or "",
-            code_host_path=code_host_path,
-            model_path=model_path,
-            work_dir=work_dir,
-            deployed_at=datetime.now().isoformat(timespec="seconds"),
-        )
-        # 持久化部署信息: 服务重启自动重连后可恢复(容器状态以实际检查为准)
-        state.save_session(deploy_info=state.deploy_info.to_dict())
+        # inspect 实际容器信息并登记到容器资源池
+        info = docker.inspect_container(container_name) or {}
+        info["work_dir"] = work_dir
+        state.register_container(info, source="created")
         task.result = state.deploy_info.to_dict()
 
     # ------------------------------------------------------------ 执行测试
 
-    def start_execute(self, designer_payload: dict, run_id: str) -> TaskRun:
-        return self._start(
-            "execute",
-            lambda task: self._run_execute(task, designer_payload, run_id))
+    def start_execute(self, designer_payload: dict, run_id: str,
+                      container: str) -> TaskRun:
+        """启动测试执行(按容器分槽, 不同容器可并发执行)"""
+        with self._lock:
+            existing = self._exec_tasks.get(container)
+            if existing and existing.status == "running":
+                raise RuntimeError(f"容器 {container} 已有测试任务正在执行")
+            task = TaskRun(kind="execute", key=container)
+            self._exec_tasks[container] = task
+            self._last_exec = task
 
-    def _run_execute(self, task: TaskRun, designer_payload: dict, run_id: str):
+        def wrapper():
+            try:
+                self._run_execute(task, designer_payload, run_id, container)
+                if task.status == "running":
+                    task.status = "done"
+            except TaskCancelled:
+                task.status = "cancelled"
+                task.error = "已取消"
+            except Exception as e:  # noqa: BLE001
+                task.status = "error"
+                task.error = f"{e}"
+                traceback.print_exc()
+            finally:
+                task.ended_at = datetime.now().isoformat(timespec="seconds")
+
+        task.thread = threading.Thread(
+            target=wrapper, daemon=True,
+            name=f"task-execute-{container}")
+        task.thread.start()
+        return task
+
+    def _run_execute(self, task: TaskRun, designer_payload: dict, run_id: str,
+                     container: str):
         state = self.state
         bus = self.bus
-        log = bus.channel_logger("exec")
+        # 每个容器独立的日志通道, 多用户在不同容器执行测试时日志不串扰
+        channel = f"exec@{container}"
+        log = bus.channel_logger(channel)
 
-        docker = state.require_deploy()
+        docker = state.docker_for_container(container)
         if not docker.container_is_running():
-            raise RuntimeError("容器未运行，请先完成部署")
+            raise RuntimeError(f"容器 {container} 未运行，请先启动容器")
+
+        busy, busy_detail = docker.container_busy(container)
+        if busy:
+            raise RuntimeError(
+                f"容器 {container} 正在执行测试，请等待完成或另选/新建容器\n"
+                f"  检测到进程: {busy_detail}")
 
         designer = TestDesigner.from_payload(designer_payload)
         err = designer.validate_case_lengths()
@@ -291,6 +401,8 @@ class TaskManager:
 
         run_dir = state.results_dir / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
+
+        log(f"执行容器: {container}  |  镜像: {docker.image_name or '-'}\n")
 
         # ===== 阶段0: 预检查模型路径 =====
         task.phase = "预检查MODEL_PATH"
@@ -420,28 +532,51 @@ class TaskManager:
 
     # ------------------------------------------------------------ 清理
 
-    def start_cleanup(self, remove_container: bool, clean_work_dir: bool,
+    def start_cleanup(self, containers: list, clean_work_dir: bool,
                       work_dir: str = "") -> TaskRun:
         return self._start(
             "cleanup",
-            lambda task: self._run_cleanup(task, remove_container,
+            lambda task: self._run_cleanup(task, containers,
                                            clean_work_dir, work_dir))
 
-    def _run_cleanup(self, task: TaskRun, remove_container: bool,
+    def _run_cleanup(self, task: TaskRun, containers: list,
                      clean_work_dir: bool, work_dir: str):
         state = self.state
-        log = self.bus.channel_logger("exec")
+        log = self.bus.channel_logger("deploy")
 
         log("\n===== 清理远程环境 =====\n")
-        docker = state.docker
+        docker = DockerManager(state.require_ssh())
 
-        if remove_container and docker and docker.container_name:
-            task.phase = f"删除容器 {docker.container_name}"
-            log(f"  停止并删除容器: {docker.container_name}\n")
-            docker.stop_and_remove(callback=log)
-            log("  ✓ 容器已清理\n")
-        else:
-            log("  (无容器需要清理)\n")
+        removed, skipped = [], []
+        for name in containers:
+            name = (name or "").strip()
+            if not name:
+                continue
+            if not is_managed_container_name(name):
+                log(f"  ✗ 跳过 {name}: 非 aisbench 前缀容器, 拒绝清理\n")
+                skipped.append(name)
+                continue
+            # 正在执行测试的容器不删除, 避免误伤其他用户的任务
+            busy, detail = docker.container_busy(name)
+            if busy:
+                log(f"  ✗ 跳过 {name}: 正在执行测试 ({detail})\n")
+                skipped.append(name)
+                continue
+            if self.is_executing(name):
+                log(f"  ✗ 跳过 {name}: 本服务正在该容器执行测试\n")
+                skipped.append(name)
+                continue
+            task.phase = f"删除容器 {name}"
+            log(f"  停止并删除容器: {name}\n")
+            docker.remove_container(name, callback=log)
+            with state.lock:
+                state.containers.pop(name, None)
+            removed.append(name)
+
+        if containers:
+            log(f"  ✓ 已删除容器: {', '.join(removed) or '(无)'}\n")
+            if skipped:
+                log(f"  ⚠ 未清理: {', '.join(skipped)}\n")
 
         target_dir = work_dir or (docker.remote_work_base if docker else "")
         if clean_work_dir and target_dir:
@@ -458,9 +593,10 @@ class TaskManager:
         log("\n✓ 环境清理完成!\n")
         log("  服务器上的测试结果不受影响 (可在\"结果历史\"中下载)\n")
 
-        if remove_container:
+        # 当前容器被删除时重置部署信息
+        if state.deploy_info and state.deploy_info.container_name in removed:
             state.reset_deploy()
-        task.result = {"cleaned": True}
+        task.result = {"cleaned": True, "removed": removed, "skipped": skipped}
 
 
 def _resolve_upload(state: AppState, upload_id: str) -> Optional[str]:

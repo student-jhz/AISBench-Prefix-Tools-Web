@@ -6,27 +6,46 @@ import { api } from "./api.js";
 
 /**
  * 日志控制台 - 处理 \r 单行刷新(进度条)
- * 后端日志以增量文本块推送, 控制台维护逻辑行缓冲
+ * 后端日志以增量文本块推送, 控制台维护逻辑行缓冲。
+ *
+ * v2.0 修复: 远程命令经 PTY 执行时, 终端驱动会把 \n 转为 \r\n(ONLCR)。
+ * 旧实现把每段结尾的 \r 当作"回到行首"的进度条刷新, 取 \r 后内容(为空)
+ * 覆盖整行 —— 导致执行日志只滚不动、看不到任何脚本输出。
+ * 现在先将 \r\n 归一化为 \n(含跨 chunk 边界的 carry 缓冲), 仅把
+ * 单独出现的 \r 视为进度条单行刷新。
  */
 export class LogConsole {
   constructor(preNode) {
     this.pre = preNode;
     this.lines = [];
     this.maxLines = 3000;
+    this.pending = "";   // 跨 chunk 的 \r\n 边界缓冲
   }
 
   append(text) {
-    // 按 \n 分段; 段内 \r 表示回到行首(保留最后一段)
-    const segments = text.split("\n");
+    this.pending += text;
+    let s = this.pending;
+    // 结尾的孤立 \r 可能是下一个 chunk 开头 \n 的一半, 先暂存
+    if (s.endsWith("\r")) {
+      this.pending = "\r";
+      s = s.slice(0, -1);
+    } else {
+      this.pending = "";
+    }
+    // PTY(ONLCR) 输出的 \r\n 统一还原为 \n
+    s = s.replace(/\r\n/g, "\n");
+
+    // 按 \n 分段; 段内单独的 \r 表示回到行首(保留最后一段, 进度条场景)
+    const segments = s.split("\n");
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i];
       if (i > 0) this.lines.push("");
+      if (!seg) continue;
+      if (this.lines.length === 0) this.lines.push("");
       if (seg.includes("\r")) {
         const last = seg.split("\r").pop();
-        if (this.lines.length === 0) this.lines.push("");
         this.lines[this.lines.length - 1] = last;
       } else if (seg) {
-        if (this.lines.length === 0) this.lines.push("");
         this.lines[this.lines.length - 1] += seg;
       }
     }
@@ -44,6 +63,7 @@ export class LogConsole {
 
   clear() {
     this.lines = [];
+    this.pending = "";
     this.render();
   }
 }

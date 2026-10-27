@@ -18,6 +18,7 @@ from .version import APP_NAME, __version__
 from .routers import (
     compare,
     config,
+    containers,
     deploy,
     designer,
     execute,
@@ -69,6 +70,7 @@ def create_app(ssh_manager=None, data_dir=None, ssh_factory=None) -> FastAPI:
     app.include_router(ssh.fs_router, prefix="/api")
     app.include_router(files.router, prefix="/api")
     app.include_router(files.uploads_router, prefix="/api")
+    app.include_router(containers.router, prefix="/api")
     app.include_router(deploy.router, prefix="/api")
     app.include_router(config.router, prefix="/api")
     app.include_router(designer.router, prefix="/api")

@@ -1,191 +1,409 @@
-/** 步骤 4: 配置 config.py */
+/** 步骤 4: 测试用例设计 */
 
-import { $, setMsg, toast, debounce } from "./util.js";
+import { $, $$, el, fmtLen, toast, modal, copyText } from "./util.js";
 import { api } from "./api.js";
-import { G } from "./main.js";
+import { G, saveDesigner } from "./main.js";
 
 
-// 界面字段 -> config.py 键
-const FIELD_IDS = {
-  dataset_path: "#cfgDatasetPath",
-  work_path: "#cfgWorkPath",
-  model_name: "#cfgModelName",
-  model_path: "#cfgModelPath",
-  host_ip: "#cfgHostIp",
-  host_port: "#cfgHostPort",
-  api_key: "#cfgApiKey",
-  default_perf: "#cfgDefaultPerf",
-  output_dir: "#cfgOutputDir",
-  pod_info: "#cfgPodInfo",
-};
-
-// 回读字段(config.py 键 -> 界面字段)
-const READ_KEY_MAP = {
-  DATASET_PATH: "dataset_path",
-  WORK_PATH: "work_path",
-  MODEL_NAME: "model_name",
-  MODEL_PATH: "model_path",
-  HOST_IP: "host_ip",
-  HOST_PORT: "host_port",
-  API_KEY: "api_key",
-  DEFAULT_PERFORMANCE_TEST: "default_perf",
-  OUTPUT_DIR: "output_dir",
-  POD_INFO: "pod_info",
-};
-
-// 步骤2 表单字段 -> 步骤4 配置字段(进入步骤4时自动继承)
-const STEP2_MAP = {
-  model_name: "modelName",
-  model_path: "modelPath",
-  host_ip: "vllmIp",
-  host_port: "vllmPort",
-  api_key: "apiKey",
-};
-
-// 用户在步骤4手动编辑过的字段, 不再被步骤2的值覆盖
-const dirtyFields = new Set();
+let presets = { input_lengths: [], output_lengths: [], grep_command: "" };
+let checkedInputs = new Set();
+let checkedOutputs = new Set();
 
 
 export function initStep4() {
-  loadDefaults();
+  loadPresets();
 
-  const preview = debounce(updatePreview, 400);
-  for (const [field, sel] of Object.entries(FIELD_IDS)) {
-    const input = $(sel);
-    // 用户手动编辑 => 标记 dirty, 后续从步骤2同步时跳过该字段
-    input.addEventListener("input", () => { dirtyFields.add(field); preview(); });
-    input.addEventListener("change", () => { dirtyFields.add(field); preview(); });
-  }
+  // 最大上下文变化 -> 刷新输入长度chips可用状态
+  $("#kvMaxLen").addEventListener("input", renderLengthChips);
 
-  $("#configSaveBtn").addEventListener("click", saveConfig);
-  $("#configVerifyBtn").addEventListener("click", verifyConfig);
-  $("#configReadBtn").addEventListener("click", readConfig);
+  $("#kvGrepCopyBtn").addEventListener("click",
+    () => copyText($("#kvGrepCmd").value));
+  $("#openLogToolsBtn").addEventListener("click", () => {
+    import("./main.js").then(m => m.showView("logtools"));
+  });
 
-  // 供 main.js 在切换到步骤4视图时调用, 保证步骤2后填的值能继承过来
-  window.syncStep4FromStep2 = syncFromStep2;
+  $("#generateCasesBtn").addEventListener("click", generateCases);
+  $("#addCaseBtn").addEventListener("click", showAddCaseModal);
+  $("#dupCaseBtn").addEventListener("click", duplicateSelectedCase);
+  $("#delCaseBtn").addEventListener("click", deleteSelectedCase);
+
+  $$(".adj-data").forEach(btn => btn.addEventListener("click",
+    () => adjustCases("data", Number(btn.dataset.factor))));
+  $$(".adj-conc").forEach(btn => btn.addEventListener("click",
+    () => adjustCases("conc", Number(btn.dataset.factor))));
 }
 
 
-function collectConfig() {
-  const config = {};
-  for (const [field, sel] of Object.entries(FIELD_IDS)) {
-    config[field] = $(sel).value.trim();
-  }
-  return config;
-}
-
-
-async function loadDefaults() {
+async function loadPresets() {
   try {
-    const data = await api.get("/api/config/defaults");
-    const defaults = data.defaults || {};
-    for (const [field, sel] of Object.entries(FIELD_IDS)) {
-      $(sel).value = defaults[field] ?? "";
+    presets = await api.get("/api/designer/presets");
+    $("#kvGrepCmd").value = presets.grep_command || "";
+    if (G.designer.params && G.designer.cases.length) {
+      // 恢复上次会话的测试用例设计(localStorage持久化)
+      await restoreDesigner();
+      return;
     }
-    // 部署后的建议值: DATASET_PATH = 代码挂载路径
-    if (data.dataset_path_default) {
-      $("#cfgDatasetPath").value = data.dataset_path_default;
-      $("#cfgDatasetPath").placeholder = data.dataset_path_default;
-    }
-    // 从步骤 2 表单同步(未手动编辑过的字段)
-    syncFromStep2();
-    updatePreview();
+    // 默认勾选: 输入取前两个有效项, 输出取 512/1024
+    const maxLen = Number($("#kvMaxLen").value) || 0;
+    const validInputs = presets.input_lengths.filter(l => !maxLen || l < maxLen);
+    checkedInputs = new Set(validInputs.slice(0, 2));
+    checkedOutputs = new Set(
+      presets.output_lengths.filter(l => [128, 256, 512, 1024].includes(l)));
+    renderLengthChips();
   } catch (err) {
-    setMsg("#configStatusMsg", `加载默认配置失败: ${err.message}`, "error");
+    toast(`加载预设失败: ${err.message}`, "error");
   }
 }
 
 
-/** 从步骤2表单继承模型/服务信息(仅覆盖未手动编辑过的字段) */
-export function syncFromStep2() {
-  const f = G.form;
-  let changed = false;
-  for (const [field, source] of Object.entries(STEP2_MAP)) {
-    const value = f[source];
-    if (!value) continue;                   // 步骤2未填写则保留现有值
-    if (dirtyFields.has(field)) continue;   // 尊重用户在步骤4的手动修改
-    const input = $(FIELD_IDS[field]);
-    const text = String(value);
-    if (input.value !== text) {
-      input.value = text;
-      changed = true;
-    }
-  }
-  if (changed) updatePreview();
-}
-
-
-async function updatePreview() {
+/** 页面刷新后恢复设计器: 回填表单 + 渲染用例 + 服务端重算派生值 */
+async function restoreDesigner() {
+  const d = G.designer;
+  $("#kvCache").value = d.params.single_kv_cache ?? "";
+  $("#kvDp").value = d.params.dp ?? 1;
+  $("#kvMaxLen").value = d.params.max_request_length ?? "";
+  $("#kvRepeatRate").value = d.params.repeat_rate ?? 0.9;
+  $("#kvRequestRate").value = d.params.request_rate ?? 0;
+  checkedInputs = new Set(d.input_lengths || []);
+  checkedOutputs = new Set(d.output_lengths || []);
+  renderLengthChips();
+  renderCases();
+  $("#testSummary").textContent = d.summary || "(尚未生成)";
+  toast("已恢复上次设计的测试用例", "info");
+  // 服务端重算派生值并恢复计算明细(失败则沿用本地数据)
   try {
-    const data = await api.post("/api/config/preview",
-      { config: collectConfig() }, { silent: true });
-    $("#configPreview").textContent = data.content || "(空)";
-    if (data.errors?.length) {
-      setMsg("#configStatusMsg", `配置有误: ${data.errors.join("; ")}`, "error");
-    } else {
-      setMsg("#configStatusMsg", "", "muted");
-    }
-  } catch (err) {
-    setMsg("#configStatusMsg", err.message, "error");
+    const data = await api.post("/api/designer/cases",
+      { ...d.params, cases: d.cases }, { silent: true });
+    G.designer.cases = data.cases;
+    G.designer.summary = data.summary;
+    renderCases();
+    $("#calcDetails").textContent = data.calc_details;
+    $("#testSummary").textContent = data.summary;
+    saveDesigner();
+  } catch { /* ignore */ }
+}
+
+
+/* ============ 长度选择 chips ============ */
+
+function renderLengthChips() {
+  const maxLen = Number($("#kvMaxLen").value) || 0;
+  renderChips($("#inputLengthChecks"), presets.input_lengths,
+    checkedInputs, v => !!maxLen && v >= maxLen);
+  renderChips($("#outputLengthChecks"), presets.output_lengths,
+    checkedOutputs, () => false);
+}
+
+
+function renderChips(container, values, checkedSet, isDisabled) {
+  container.innerHTML = "";
+  for (const value of values) {
+    const disabled = isDisabled(value);
+    if (disabled) checkedSet.delete(value);
+    const checkbox = el("input", { type: "checkbox", value: String(value) });
+    checkbox.checked = checkedSet.has(value);
+    checkbox.disabled = disabled;
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) checkedSet.add(value);
+      else checkedSet.delete(value);
+      persistChecked();
+    });
+    container.append(el("label",
+      { class: `check-chip${disabled ? " disabled" : ""}` },
+      checkbox, el("span", {}, fmtLen(value))));
   }
 }
 
 
-async function saveConfig() {
-  const btn = $("#configSaveBtn");
+/** 将当前勾选的输入/输出长度同步到持久化状态 */
+function persistChecked() {
+  G.designer.input_lengths = [...checkedInputs];
+  G.designer.output_lengths = [...checkedOutputs];
+  saveDesigner();
+}
+
+
+function checkedValues(containerSel, checkedSet) {
+  const values = [...checkedSet].filter(v =>
+    !$(containerSel).querySelector(`input[value="${v}"]`)?.disabled);
+  return values.sort((a, b) => a - b);
+}
+
+
+/* ============ KV 参数 / 生成用例 ============ */
+
+function designerParams() {
+  return {
+    single_kv_cache: parseInt($("#kvCache").value, 10) || 0,
+    dp: parseInt($("#kvDp").value, 10) || 1,
+    max_request_length: parseInt($("#kvMaxLen").value, 10) || 0,
+    repeat_rate: parseFloat($("#kvRepeatRate").value) || 0.9,
+    request_rate: parseFloat($("#kvRequestRate").value) || 0,
+  };
+}
+
+
+async function generateCases() {
+  const params = designerParams();
+  if (!params.single_kv_cache || !params.max_request_length) {
+    toast("请先填写单个DP组KV cache与模型最大上下文", "warning");
+    return;
+  }
+  if (!(params.repeat_rate > 0 && params.repeat_rate <= 1)) {
+    toast("前缀命中率应在 (0, 1] 之间", "warning");
+    return;
+  }
+
+  const btn = $("#generateCasesBtn");
   btn.disabled = true;
-  setMsg("#configStatusMsg", "正在写入容器...", "warn");
+  btn.textContent = "生成中...";
   try {
-    const data = await api.post("/api/config/save", { config: collectConfig() });
+    const data = await api.post("/api/designer/generate", {
+      ...params,
+      input_lengths: checkedValues("#inputLengthChecks", checkedInputs),
+      output_lengths: checkedValues("#outputLengthChecks", checkedOutputs),
+    });
+    applyDesignerResponse(data, params);
+
+    const banner = $("#skippedWarning");
     if (data.warning) {
-      setMsg("#configStatusMsg", data.warning, "warn");
-    } else if (data.mismatches?.length) {
-      setMsg("#configStatusMsg",
-        `已写入但存在不一致: ${data.mismatches.join("; ")}`, "warn");
+      banner.hidden = false;
+      banner.textContent = `⚠ ${data.warning}`;
     } else {
-      setMsg("#configStatusMsg", "✓ 配置已保存到容器, 回读校验一致", "ok");
+      banner.hidden = true;
     }
-    if (data.host_path) {
-      $("#configPathLabel").textContent =
-        `宿主机路径: ${data.host_path}  |  容器内路径: ${data.container_path}`;
-    }
-    if (data.content) $("#configPreview").textContent = data.content;
-    toast("config.py 已保存", "success");
+    toast(`已生成 ${data.cases.length} 个测试用例`, "success");
   } catch (err) {
-    setMsg("#configStatusMsg", err.message, "error");
-    toast(err.message, "error", 5000);
+    toast(err.message, "error", 6000);
   } finally {
     btn.disabled = false;
+    btn.textContent = "⚙️ 生成测试用例";
   }
 }
 
 
-async function verifyConfig() {
-  setMsg("#configStatusMsg", "正在回读验证...", "warn");
-  try {
-    const data = await api.post("/api/config/verify", { config: collectConfig() });
-    if (data.ok) {
-      setMsg("#configStatusMsg", "✓ 容器内配置与界面值一致", "ok");
-    } else {
-      setMsg("#configStatusMsg", `配置不一致: ${data.mismatches.join("; ")}`, "warn");
+function applyDesignerResponse(data, params) {
+  G.designer.params = params;
+  G.designer.cases = data.cases;
+  G.designer.summary = data.summary;
+  G.designer.input_lengths = checkedValues("#inputLengthChecks", checkedInputs);
+  G.designer.output_lengths = checkedValues("#outputLengthChecks", checkedOutputs);
+  saveDesigner();
+  renderCases();
+  $("#calcDetails").textContent = data.calc_details;
+  $("#testSummary").textContent = data.summary;
+}
+
+
+/* ============ 用例表格 ============ */
+
+function selectedCaseIndex() {
+  const radio = $('input[name="caseRadio"]:checked');
+  return radio ? Number(radio.value) : -1;
+}
+
+
+function renderCases() {
+  const tbody = $("#casesTableBody");
+  tbody.innerHTML = "";
+  const cases = G.designer.cases;
+  if (!cases.length) {
+    tbody.append(el("tr", { class: "empty-row" },
+      el("td", { colspan: "8" }, "点击「生成测试用例」后显示")));
+    $("#belowMinBanner").hidden = true;
+    return;
+  }
+
+  cases.forEach((c, i) => {
+    const tr = el("tr");
+    if (c.below_min) tr.classList.add("row-below-min");
+
+    const radio = el("input",
+      { type: "radio", name: "caseRadio", value: String(i) });
+    radio.addEventListener("change", () => {
+      $$("#casesTableBody tr").forEach(r => r.classList.remove("row-selected"));
+      tr.classList.add("row-selected");
+    });
+
+    tr.append(
+      el("td", {}, radio),
+      el("td", {}, String(i + 1)),
+      editableCell(c, "input_len"),
+      editableCell(c, "output_len"),
+      editableCell(c, "data_num_recommended"),
+      el("td", {}, c.data_num_min != null ? c.data_num_min.toLocaleString() : "-"),
+      editableCell(c, "concurrency_recommended"),
+      el("td", {}, c.kv_usage != null ? `${c.kv_usage}%` : "-"),
+    );
+    if (c.is_custom) {
+      tr.children[2].append(el("span", { class: "tag-custom" }, "自定义"));
     }
-  } catch (err) {
-    setMsg("#configStatusMsg", err.message, "error");
+    tbody.append(tr);
+  });
+
+  // 低于最小请求数提示
+  const below = cases.filter(c => c.below_min);
+  const banner = $("#belowMinBanner");
+  if (below.length) {
+    const list = below.map(c =>
+      `#${cases.indexOf(c) + 1}(${fmtLen(c.input_len)}/${fmtLen(c.output_len)})`).join(", ");
+    banner.hidden = false;
+    banner.textContent =
+      `⚠ 以下用例的请求数低于最小值, 不会在HBM之外的缓存介质命中: ${list}`;
+  } else {
+    banner.hidden = true;
   }
 }
 
 
-async function readConfig() {
-  setMsg("#configStatusMsg", "正在读取容器配置...", "warn");
-  try {
-    const data = await api.get("/api/config/read");
-    const fields = data.fields || {};
-    for (const [key, field] of Object.entries(READ_KEY_MAP)) {
-      if (fields[key] !== undefined) $(FIELD_IDS[field]).value = fields[key];
+function editableCell(caseData, field) {
+  const input = el("input",
+    { type: "number", class: "cell-input", value: String(caseData[field]) });
+  input.addEventListener("change", async () => {
+    const value = parseInt(input.value, 10);
+    if (!Number.isFinite(value) || value < 1) {
+      input.value = String(caseData[field]);
+      return;
     }
-    $("#configPreview").textContent = data.content || "(空)";
-    setMsg("#configStatusMsg", "✓ 已读取容器内当前 config.py 并填充表单", "ok");
+    caseData[field] = value;
+    await submitCases();
+  });
+  return el("td", { class: "cell-editable" }, input);
+}
+
+
+/** 提交完整用例列表到服务端校验并重算派生值 */
+async function submitCases() {
+  const params = G.designer.params;
+  if (!params || !G.designer.cases.length) return;
+  try {
+    const data = await api.post("/api/designer/cases", {
+      ...params,
+      cases: G.designer.cases,
+    });
+    G.designer.cases = data.cases;
+    G.designer.summary = data.summary;
+    saveDesigner();
+    renderCases();
+    $("#calcDetails").textContent = data.calc_details;
+    $("#testSummary").textContent = data.summary;
   } catch (err) {
-    setMsg("#configStatusMsg", err.message, "error");
+    toast(err.message, "error", 6000);
   }
+}
+
+
+/* ============ 添加 / 复制 / 删除 / 系数调整 ============ */
+
+function showAddCaseModal() {
+  if (!G.designer.params) {
+    toast("请先生成测试用例", "warning");
+    return;
+  }
+  const params = G.designer.params;
+  const totalKv = params.single_kv_cache * params.dp;
+
+  const inputEl = el("input", { type: "number", class: "cell-input", placeholder: "如 16384" });
+  const outputEl = el("input", { type: "number", class: "cell-input", placeholder: "如 512" });
+  const reqEl = el("input", { type: "number", class: "cell-input", placeholder: "留空=推荐值" });
+  const concEl = el("input", { type: "number", class: "cell-input", placeholder: "留空=最大并发" });
+
+  const m = modal({ title: "添加测试用例" });
+  m.body.append(el("div", { class: "form-grid" },
+    formItem("输入长度 (tokens) *", inputEl),
+    formItem("输出长度 (tokens) *", outputEl),
+    formItem("请求数", reqEl),
+    formItem("并发数", concEl),
+    el("div", { class: "form-item span-2 hint-text" },
+      `按当前参数计算: 并发数 = floor(${totalKv.toLocaleString()} / (输入+输出)), ` +
+      `推荐请求数 = (floor(${totalKv.toLocaleString()} / 输入 / ${params.repeat_rate}) + 1) × 2`),
+  ));
+
+  m.footer.append(
+    el("button", { class: "btn btn-outline", onclick: m.close }, "取消"),
+    el("button", {
+      class: "btn btn-primary",
+      onclick: async () => {
+        const inputLen = parseInt(inputEl.value, 10);
+        const outputLen = parseInt(outputEl.value, 10);
+        if (!inputLen || !outputLen || inputLen < 1 || outputLen < 1) {
+          toast("请填写有效的输入/输出长度", "warning");
+          return;
+        }
+        const total = inputLen + outputLen;
+        const maxCc = Math.max(1, Math.floor(totalKv / total));
+        const minReq = Math.floor(totalKv / inputLen / params.repeat_rate) + 1;
+        const recReq = minReq * 2;
+        G.designer.cases.push({
+          input_len: inputLen,
+          output_len: outputLen,
+          data_num_recommended: parseInt(reqEl.value, 10) || recReq,
+          data_num_min: minReq,
+          concurrency_recommended: parseInt(concEl.value, 10) || maxCc,
+          concurrency_max: maxCc,
+          repeat_rate: params.repeat_rate,
+          dp: params.dp,
+          is_custom: true,
+        });
+        m.close();
+        await submitCases();
+        toast("用例已添加", "success");
+      },
+    }, "添加"),
+  );
+}
+
+
+function formItem(label, input) {
+  return el("div", { class: "form-item" },
+    el("label", {}, label), input);
+}
+
+
+async function duplicateSelectedCase() {
+  const idx = selectedCaseIndex();
+  if (idx < 0) {
+    toast("请先选择一个用例", "warning");
+    return;
+  }
+  const source = G.designer.cases[idx];
+  G.designer.cases.splice(idx + 1, 0, { ...source, is_custom: true });
+  await submitCases();
+  toast("用例已复制", "success");
+}
+
+
+async function deleteSelectedCase() {
+  const idx = selectedCaseIndex();
+  if (idx < 0) {
+    toast("请先选择一个用例", "warning");
+    return;
+  }
+  G.designer.cases.splice(idx, 1);
+  if (!G.designer.cases.length) {
+    G.designer.params = null;
+    renderCases();
+    saveDesigner();
+    $("#calcDetails").textContent = "(尚未生成测试用例)";
+    $("#testSummary").textContent = "(尚未生成)";
+    toast("已删除全部用例", "info");
+    return;
+  }
+  await submitCases();
+  toast("用例已删除", "success");
+}
+
+
+async function adjustCases(kind, factor) {
+  if (!G.designer.cases.length) {
+    toast("请先生成测试用例", "warning");
+    return;
+  }
+  const field = kind === "data" ? "data_num_recommended" : "concurrency_recommended";
+  for (const c of G.designer.cases) {
+    c[field] = Math.max(1, Math.round(c[field] * factor));
+    if (kind === "data") c.is_custom = true;
+  }
+  await submitCases();
+  toast(`已将${kind === "data" ? "请求数" : "并发数"}整体 ×${factor}`, "success");
 }

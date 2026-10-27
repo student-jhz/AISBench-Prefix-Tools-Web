@@ -1,217 +1,196 @@
-/** 步骤 3: Docker 部署 */
+/** 步骤 3: 配置 config.py —— 模型服务信息与 MODEL_PATH 均在此配置 */
 
-import { $, el, setMsg, toast, confirmDialog, fmtTime } from "./util.js";
+import { $, setMsg, toast, debounce } from "./util.js";
 import { api } from "./api.js";
-import { G, saveForm, refreshState } from "./main.js";
-import { getImageSelection, getCodeSelection } from "./step2.js";
+import { G } from "./main.js";
 
 
-let lastDeployRunning = false;
+// 界面字段 -> config.py 键
+const FIELD_IDS = {
+  dataset_path: "#cfgDatasetPath",
+  work_path: "#cfgWorkPath",
+  model_name: "#cfgModelName",
+  model_path: "#cfgModelPath",
+  host_ip: "#cfgHostIp",
+  host_port: "#cfgHostPort",
+  api_key: "#cfgApiKey",
+  default_perf: "#cfgDefaultPerf",
+  output_dir: "#cfgOutputDir",
+  pod_info: "#cfgPodInfo",
+};
+
+// 回读字段(config.py 键 -> 界面字段)
+const READ_KEY_MAP = {
+  DATASET_PATH: "dataset_path",
+  WORK_PATH: "work_path",
+  MODEL_NAME: "model_name",
+  MODEL_PATH: "model_path",
+  HOST_IP: "host_ip",
+  HOST_PORT: "host_port",
+  API_KEY: "api_key",
+  DEFAULT_PERFORMANCE_TEST: "default_perf",
+  OUTPUT_DIR: "output_dir",
+  POD_INFO: "pod_info",
+};
+
+// 用户手动编辑过的字段, 不再被容器默认值覆盖
+const dirtyFields = new Set();
 
 
 export function initStep3() {
-  const workDirEl = $("#workDir");
+  loadDefaults();
 
-  // 工作目录持久化
-  workDirEl.addEventListener("input", () => {
-    G.form.workDir = workDirEl.value;
-    saveForm();
-  });
+  const preview = debounce(updatePreview, 400);
+  for (const [field, sel] of Object.entries(FIELD_IDS)) {
+    const input = $(sel);
+    // 用户手动编辑 => 标记 dirty, 后续从步骤2同步时跳过该字段
+    input.addEventListener("input", () => { dirtyFields.add(field); preview(); });
+    input.addEventListener("change", () => { dirtyFields.add(field); preview(); });
+  }
 
-  $("#workDirCheckBtn").addEventListener("click", checkWorkDir);
-  $("#workDirCleanBtn").addEventListener("click", cleanWorkDir);
-  $("#deployStartBtn").addEventListener("click", startDeploy);
-  $("#deployCancelBtn").addEventListener("click", cancelDeploy);
+  $("#configSaveBtn").addEventListener("click", saveConfig);
+  $("#configVerifyBtn").addEventListener("click", verifyConfig);
+  $("#configReadBtn").addEventListener("click", readConfig);
 
-  window.updateDeployInfo = renderDeployInfo;
+  // 供 main.js 在切换到步骤3视图时调用(选择容器后刷新默认值)
+  window.syncConfigFromContainer = syncFromContainer;
 }
 
 
-/* ============ 工作目录检查 / 清理 ============ */
+function collectConfig() {
+  const config = {};
+  for (const [field, sel] of Object.entries(FIELD_IDS)) {
+    config[field] = $(sel).value.trim();
+  }
+  return config;
+}
 
-async function checkWorkDir() {
-  const workDir = $("#workDir").value.trim() || "/tmp/AISBench_Prefix_Tools";
-  setMsg("#workDirMsg", "检查中...", "warn");
+
+async function loadDefaults() {
+  try {
+    const data = await api.get("/api/config/defaults");
+    const defaults = data.defaults || {};
+    for (const [field, sel] of Object.entries(FIELD_IDS)) {
+      $(sel).value = defaults[field] ?? "";
+    }
+    // 建议值: DATASET_PATH = 代码挂载路径
+    if (data.dataset_path_default) {
+      $("#cfgDatasetPath").value = data.dataset_path_default;
+      $("#cfgDatasetPath").placeholder = data.dataset_path_default;
+    }
+    // 按当前选择的容器同步默认值(未手动编辑过的字段)
+    syncFromContainer();
+    updatePreview();
+  } catch (err) {
+    setMsg("#configStatusMsg", `加载默认配置失败: ${err.message}`, "error");
+  }
+}
+
+
+/**
+ * 从当前选择的容器继承默认值(仅覆盖未手动编辑过的字段):
+ * - MODEL_PATH  ← 容器挂载的模型目录
+ * - DATASET_PATH ← 容器内代码挂载路径
+ * - HOST_IP     ← 执行机 IP(vLLM 与执行机同机时)
+ */
+export function syncFromContainer() {
+  const info = G.containerInfo;
+  let changed = false;
+
+  const defaults = {};
+  if (info) {
+    if (info.model_path_hint) defaults.model_path = info.model_path_hint;
+    if (info.code_mount_path) defaults.dataset_path = info.code_mount_path;
+  }
+  if (G.state?.ssh?.connected) defaults.host_ip = G.state.ssh.host;
+
+  for (const [field, value] of Object.entries(defaults)) {
+    const input = $(FIELD_IDS[field]);
+    if (!input || input.value.trim() || dirtyFields.has(field)) continue;
+    input.value = value;
+    changed = true;
+  }
+  if (changed) {
+    updatePreview();
+    toast("已按当前容器填充默认配置(可手动修改)", "info", 2000);
+  }
+}
+
+
+async function updatePreview() {
+  try {
+    const data = await api.post("/api/config/preview",
+      { config: collectConfig() }, { silent: true });
+    $("#configPreview").textContent = data.content || "(空)";
+    if (data.errors?.length) {
+      setMsg("#configStatusMsg", `配置有误: ${data.errors.join("; ")}`, "error");
+    } else {
+      setMsg("#configStatusMsg", "", "muted");
+    }
+  } catch (err) {
+    setMsg("#configStatusMsg", err.message, "error");
+  }
+}
+
+
+async function saveConfig() {
+  const btn = $("#configSaveBtn");
+  btn.disabled = true;
+  setMsg("#configStatusMsg", "正在写入容器...", "warn");
+  try {
+    const data = await api.post("/api/config/save",
+      { config: collectConfig(), container: G.container });
+    if (data.warning) {
+      setMsg("#configStatusMsg", data.warning, "warn");
+    } else if (data.mismatches?.length) {
+      setMsg("#configStatusMsg",
+        `已写入但存在不一致: ${data.mismatches.join("; ")}`, "warn");
+    } else {
+      setMsg("#configStatusMsg", "✓ 配置已保存到容器, 回读校验一致", "ok");
+    }
+    if (data.host_path) {
+      $("#configPathLabel").textContent =
+        `宿主机路径: ${data.host_path}  |  容器内路径: ${data.container_path}`;
+    }
+    if (data.content) $("#configPreview").textContent = data.content;
+    toast("config.py 已保存", "success");
+  } catch (err) {
+    setMsg("#configStatusMsg", err.message, "error");
+    toast(err.message, "error", 5000);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+
+async function verifyConfig() {
+  setMsg("#configStatusMsg", "正在回读验证...", "warn");
+  try {
+    const data = await api.post("/api/config/verify",
+      { config: collectConfig(), container: G.container });
+    if (data.ok) {
+      setMsg("#configStatusMsg", "✓ 容器内配置与界面值一致", "ok");
+    } else {
+      setMsg("#configStatusMsg", `配置不一致: ${data.mismatches.join("; ")}`, "warn");
+    }
+  } catch (err) {
+    setMsg("#configStatusMsg", err.message, "error");
+  }
+}
+
+
+async function readConfig() {
+  setMsg("#configStatusMsg", "正在读取容器配置...", "warn");
   try {
     const data = await api.get(
-      `/api/deploy/preflight?work_dir=${encodeURIComponent(workDir)}`);
-    if (!data.exists) {
-      setMsg("#workDirMsg", "目录不存在(部署时将自动创建)", "muted");
-    } else if (!data.has_content) {
-      setMsg("#workDirMsg", "目录存在且为空", "ok");
-    } else {
-      setMsg("#workDirMsg",
-        `目录已存在, 含 ${data.entries.length} 项内容(部署前建议先清理)`, "warn");
+      `/api/config/read?container=${encodeURIComponent(G.container || "")}`);
+    const fields = data.fields || {};
+    for (const [key, field] of Object.entries(READ_KEY_MAP)) {
+      if (fields[key] !== undefined) $(FIELD_IDS[field]).value = fields[key];
     }
+    $("#configPreview").textContent = data.content || "(空)";
+    setMsg("#configStatusMsg", "✓ 已读取容器内当前 config.py 并填充表单", "ok");
   } catch (err) {
-    setMsg("#workDirMsg", err.message, "error");
+    setMsg("#configStatusMsg", err.message, "error");
   }
-}
-
-
-async function cleanWorkDir() {
-  const workDir = $("#workDir").value.trim();
-  if (!workDir) {
-    setMsg("#workDirMsg", "请先填写远程工作目录", "error");
-    return;
-  }
-  const ok = await confirmDialog(
-    `将删除远程执行机上的工作目录:\n${workDir}\n\n其中的镜像tar包/代码等文件将被清除, 是否继续?`,
-    { title: "清理工作目录", danger: true, okText: "清理" });
-  if (!ok) return;
-  try {
-    await api.post("/api/cleanup",
-      { remove_container: false, clean_work_dir: true, work_dir: workDir });
-    toast("清理任务已启动, 详情见部署日志", "info");
-  } catch (err) {
-    setMsg("#workDirMsg", err.message, "error");
-  }
-}
-
-
-/* ============ 部署启动 / 取消 ============ */
-
-async function startDeploy() {
-  const image = getImageSelection();
-  const code = getCodeSelection();
-  const modelPath = $("#modelPath").value.trim();
-  const workDir = $("#workDir").value.trim() || "/tmp/AISBench_Prefix_Tools";
-
-  // 前置校验
-  if (image.type === "upload" && !image.upload_id) {
-    toast("请先在步骤 2 上传镜像 tar 包", "warning");
-    return;
-  }
-  if (image.type === "remote" && !image.remote_path) {
-    toast("请先在步骤 2 填写远程镜像 tar 路径", "warning");
-    return;
-  }
-  if (code.source === "zip" && !code.zip_upload_id) {
-    toast("请先在步骤 2 上传代码 zip 包", "warning");
-    return;
-  }
-  if (!modelPath) {
-    toast("请先在步骤 2 填写模型权重路径", "warning");
-    return;
-  }
-
-  G.form.workDir = workDir;
-  saveForm();
-
-  const btn = $("#deployStartBtn");
-  btn.disabled = true;
-  btn.textContent = "部署中...";
-  $("#deployCancelBtn").disabled = false;
-  $("#deployPhase").textContent = "⏳ 任务启动中...";
-  lastDeployRunning = true;
-
-  try {
-    await api.post("/api/deploy/start", {
-      image,
-      model_path: modelPath,
-      work_dir: workDir,
-      code,
-      clean_work_dir: false,
-    });
-    toast("部署任务已启动", "success");
-    await refreshState({ silent: true });
-  } catch (err) {
-    btn.disabled = false;
-    btn.textContent = "🚀 开始部署";
-    $("#deployCancelBtn").disabled = true;
-    $("#deployPhase").textContent = "";
-    lastDeployRunning = false;
-    toast(err.message, "error", 5000);
-  }
-}
-
-
-async function cancelDeploy() {
-  try {
-    const data = await api.post("/api/deploy/cancel");
-    toast(data.ok ? "已发送取消请求" : "任务未在运行", data.ok ? "info" : "warning");
-  } catch (err) {
-    toast(err.message, "error");
-  }
-}
-
-
-/* ============ 部署状态轮询(main.js 高频调用) ============ */
-
-export async function pollDeployStatus() {
-  let st;
-  try {
-    st = await api.get("/api/deploy/status", { silent: true });
-  } catch {
-    return;
-  }
-  $("#deployPhase").textContent = st.running
-    ? `⏳ [${st.status}] ${st.phase || "部署中"}...`
-    : "";
-
-  if (lastDeployRunning && !st.running) {
-    if (st.status === "done") {
-      toast("Docker 部署完成!", "success");
-      renderDeployInfo(st.result);
-    } else if (st.status === "error") {
-      toast(`部署失败: ${st.error}`, "error", 8000);
-    } else if (st.status === "cancelled") {
-      toast("部署已取消", "info");
-    }
-    await refreshState({ silent: true });
-  }
-  lastDeployRunning = st.running;
-}
-
-
-/* ============ 部署信息卡片 ============ */
-
-const INFO_FIELDS = [
-  ["容器名称", "container_name"],
-  ["镜像", "image_name"],
-  ["代码路径(宿主机)", "code_host_path"],
-  ["代码挂载(容器内)", "code_mount_path"],
-  ["模型路径", "model_path"],
-  ["工作目录", "work_dir"],
-  ["部署时间", "deployed_at"],
-];
-
-
-function renderDeployInfo(deploy) {
-  const card = $("#deployInfoCard");
-  const grid = $("#deployInfoGrid");
-  if (!deploy || !deploy.container_name) {
-    card.hidden = true;
-    return;
-  }
-  card.hidden = false;
-  grid.innerHTML = "";
-  for (const [label, key] of INFO_FIELDS) {
-    let value = deploy[key] || "-";
-    if (key === "deployed_at") value = fmtTime(value);
-    grid.append(el("div", { class: "info-item" },
-      el("div", { class: "info-label" }, label),
-      el("div", { class: "info-value" }, value)));
-  }
-  // 已部署时同步工作目录显示
-  const workDirEl = $("#workDir");
-  if (deploy.work_dir && (!workDirEl.value.trim() ||
-      workDirEl.value.trim() === "/tmp/AISBench_Prefix_Tools")) {
-    workDirEl.value = deploy.work_dir;
-  }
-}
-
-
-/* ============ 任务状态按钮刷新(由 step6 汇总挂载) ============ */
-
-export function updateDeployTaskUI(tasks) {
-  const t = tasks?.deploy;
-  const running = !!t?.running;
-  const startBtn = $("#deployStartBtn");
-  startBtn.disabled = running;
-  startBtn.textContent = running ? "部署中..." : "🚀 开始部署";
-  $("#deployCancelBtn").disabled = !running;
-  $("#workDirCheckBtn").disabled = running;
-  $("#workDirCleanBtn").disabled = running;
-  if (!running) $("#deployPhase").textContent = "";
 }

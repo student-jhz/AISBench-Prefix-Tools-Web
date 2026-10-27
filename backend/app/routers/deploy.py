@@ -1,7 +1,8 @@
-"""Docker 部署"""
+"""容器创建(原 Docker 部署步骤)"""
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from ..core.docker_manager import validate_container_name
 from ..schemas import DeployStartRequest, RemoteTarCheckRequest
 from ..paths import bundle_dir
 from ..state import AppState
@@ -44,33 +45,41 @@ def preflight(work_dir: str = "/tmp/AISBench_Prefix_Tools",
 
 @router.post("/start")
 def start_deploy(req: DeployStartRequest, state: AppState = Depends(get_state)):
-    """启动部署(后台任务), 日志通过 WS deploy 通道推送"""
+    """创建新容器(后台任务), 日志通过 WS deploy 通道推送
+
+    流程: 选择镜像(已有优先) → 模型父目录映射 → 自定义容器名 → 创建。
+    """
     if not state.ssh.connected:
         raise HTTPException(400, "请先连接执行机 (步骤 1)")
     if state.tasks.is_running("deploy"):
         raise HTTPException(400, "部署任务正在运行中")
-    if state.tasks.is_running("execute"):
-        raise HTTPException(400, "测试执行中，无法重新部署")
 
     # 参数校验
     image = req.image
+    if image.type == "existing" and not (image.name or "").strip():
+        raise HTTPException(400, "请选择执行机上已有的镜像")
     if image.type == "upload" and not image.upload_id:
         raise HTTPException(400, "请上传镜像 tar 包")
     if image.type == "remote" and not (image.remote_path or "").strip():
         raise HTTPException(400, "请填写远程镜像 tar 路径")
     if req.code.source == "zip" and not req.code.zip_upload_id:
         raise HTTPException(400, "请上传代码 zip 包")
-    if not req.model_path.strip():
-        raise HTTPException(400, "请填写模型权重路径")
+    if not req.model_mount.strip():
+        raise HTTPException(400, "请填写要映射进容器的模型目录")
+    err = validate_container_name(req.container_name.strip())
+    if err:
+        raise HTTPException(400, err)
 
     # 清理旧日志通道
     state.tasks.bus.clear("deploy")
 
     params = {
         "image": {"type": image.type,
+                  "name": (image.name or "").strip(),
                   "upload_id": image.upload_id,
                   "remote_path": image.remote_path},
-        "model_path": req.model_path,
+        "model_mount": req.model_mount,
+        "container_name": req.container_name,
         "work_dir": req.work_dir,
         "code": {"source": req.code.source,
                  "zip_upload_id": req.code.zip_upload_id},

@@ -1,6 +1,7 @@
 """测试用 FakeSSH - 模拟远程执行机的 SSH/SFTP/Docker 行为"""
 
 import io
+import json
 import os
 import re
 import tarfile
@@ -43,6 +44,8 @@ class FakeSSH:
         self.files = {}       # remote_path -> bytes/str
         self.images = set()   # 已加载镜像
         self.containers = {}  # name -> status
+        self.container_meta = {}    # name -> {"image", "binds"}
+        self.busy_containers = set()  # 模拟正在执行测试的容器
         self.exec_log = []
 
     # ------------------------------------------------------------ 连接
@@ -71,6 +74,55 @@ class FakeSSH:
         if command.startswith("docker --version"):
             return 0, "Docker version 24.0.0, build abc\n", ""
 
+        # ---- v2.0 容器资源池: 镜像列表(tab分隔) ----
+        if "docker images --format" in command and "{{.Repository}}\\t{{.Tag}}" in command:
+            out = ""
+            for img in sorted(self.images):
+                repo, _, tag = img.rpartition(":")
+                out += f"{repo}\t{tag}\tabc123\t1.2GB\t2026-01-01 00:00:00 +0800 CST\n"
+            return 0, out, ""
+
+        # ---- v2.0 容器资源池: 容器列表(tab分隔, 含已停止) ----
+        if "docker ps -a --format" in command and "{{.Names}}\\t{{.Image}}" in command:
+            out = ""
+            for name, status in self.containers.items():
+                meta = self.container_meta.get(name, {})
+                out += (f"{name}\t{meta.get('image', 'fakeimage:latest')}\t"
+                        f"{status}\tAbout a minute ago\n")
+            return 0, out, ""
+
+        # ---- v2.0: docker inspect(镜像/状态/挂载) ----
+        if "docker inspect --format" in command:
+            m = re.search(r"docker inspect --format '[^']*' (\S+)", command)
+            name = m.group(1) if m else ""
+            if name not in self.containers:
+                return 1, "", "Error: No such object: " + name
+            status = self.containers.get(name, "Up 1 second")
+            state = "running" if status.lower().startswith("up") else "exited"
+            meta = self.container_meta.get(name, {})
+            binds = meta.get("binds", [])
+            out = f"{meta.get('image', 'fakeimage:latest')}\t{state}\t{json.dumps(binds)}\n"
+            return 0, out, ""
+
+        # ---- v2.0: docker top(测试执行中检测) ----
+        if command.startswith("docker top"):
+            m = re.search(r"docker top (\S+)", command)
+            name = m.group(1) if m else ""
+            if name not in self.containers:
+                return 1, "", "Error: No such container: " + name
+            out = "PID\tCMD\n1234\tpython3\n"
+            if name in self.busy_containers:
+                out += "2345\tbash run_tests.sh\n"
+            return 0, out, ""
+
+        # ---- v2.0: docker start ----
+        if command.startswith("docker start"):
+            m = re.search(r"docker start (\S+)", command)
+            if m and m.group(1) in self.containers:
+                self.containers[m.group(1)] = "Up 1 second"
+                return 0, m.group(1) + "\n", ""
+            return 1, "", "Error: No such container"
+
         if "docker ps --format" in command and "{{.Names}}|{{.Status}}|{{.Image}}" in command:
             # logtools: 列出运行中容器
             out = "".join(f"{n}|{s}|fakeimage:latest\n" for n, s in self.containers.items())
@@ -96,6 +148,8 @@ class FakeSSH:
             m = re.search(r"(?:stop|rm) (\S+)", command)
             if m:
                 self.containers.pop(m.group(1), None)
+                self.container_meta.pop(m.group(1), None)
+                self.busy_containers.discard(m.group(1))
             return 0, "", ""
 
         if "ls -A" in command:
@@ -161,6 +215,11 @@ class FakeSSH:
             m = re.search(r"--name (\S+)", command)
             name = m.group(1) if m else "unknown"
             self.containers[name] = "Up 2 seconds"
+            # 记录镜像与挂载, 供 docker inspect 模拟使用
+            image = command.strip().split()[-2] if command.strip().endswith("python3") \
+                else "fakeimage:latest"
+            binds = re.findall(r"-v (\S+)", command)
+            self.container_meta[name] = {"image": image, "binds": binds}
             out = "abc123def456\n"
             if callback:
                 callback(out)

@@ -4,6 +4,8 @@
 - load_image 使用输出捕获解析镜像名(修复桌面版重复 docker load 的问题)
 - 新增 get_image_name_from_remote_tar(远程tar包manifest预读)
 - 新增 work_dir_has_content
+- v2.0: 容器资源池模型 —— 列出/检查/选择已有容器(busy检测), 创建容器
+  使用用户自定义的 aisbench_ 前缀名称, 同名冲突报错而非覆盖删除
 - 日志/附件下载统一走 ssh.download_file
 """
 
@@ -16,6 +18,37 @@ from datetime import datetime
 from typing import Optional, Tuple, List, Callable
 
 from .ssh_manager import SSHManager
+
+
+# 容器命名约定: 多用户共享执行机, 所有测试容器统一使用 aisbench_ 前缀,
+# 便于识别与隔离; 清理时仅允许操作该前缀的容器, 且必须显式指定名称。
+CONTAINER_PREFIX = "aisbench_"
+# 兼容旧版本自动生成的 aisbench-test-* 容器, 列表/清理时同样可见
+CONTAINER_LIST_PREFIXES = ("aisbench_", "aisbench-")
+CONTAINER_NAME_RE = re.compile(r"^aisbench_[A-Za-z0-9][A-Za-z0-9_.-]*$")
+# 列表/清理时允许操作的容器名(含旧版 aisbench- 前缀)
+MANAGED_CONTAINER_RE = re.compile(r"^aisbench[-_][A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+# 容器内正在执行测试的进程特征(run_tests.sh / aisbench_test.py)
+BUSY_PROC_RE = re.compile(r"run_tests\.sh|aisbench_test\.py")
+
+
+def validate_container_name(name: str) -> Optional[str]:
+    """校验容器名(必须 aisbench_ 前缀 + 安全字符), 返回错误信息或 None"""
+    name = (name or "").strip()
+    if not name:
+        return "请填写容器名称"
+    if not name.startswith(CONTAINER_PREFIX):
+        return f"容器名称必须以 {CONTAINER_PREFIX} 开头 (当前: {name})"
+    if not CONTAINER_NAME_RE.match(name):
+        return (f"容器名称格式不合法: {name} "
+                f"(允许 {CONTAINER_PREFIX} + 字母/数字/下划线/点/连字符)")
+    return None
+
+
+def is_managed_container_name(name: str) -> bool:
+    """名称是否属于本工具管理的 aisbench 容器(列表/清理白名单)"""
+    return bool(MANAGED_CONTAINER_RE.match((name or "").strip()))
 
 
 class DockerManager:
@@ -154,9 +187,9 @@ class DockerManager:
         return True, image_name
 
     def generate_container_name(self) -> str:
-        """生成唯一的容器名称"""
-        timestamp = datetime.now().strftime('%m%d%H%M')
-        return f"aisbench-test-{timestamp}"
+        """生成默认容器名称(用户可自定义, 但保持 aisbench_ 前缀)"""
+        timestamp = datetime.now().strftime('%m%d_%H%M%S')
+        return f"{CONTAINER_PREFIX}test_{timestamp}"
 
     def container_exists(self, name: str) -> bool:
         """检查容器是否存在"""
@@ -173,26 +206,159 @@ class DockerManager:
         self.ssh.execute(f"docker rm {name} 2>/dev/null")
         return True
 
-    def create_container(self, image_name: str, model_path: str,
-                         code_host_path: str,
-                         container_name: str = None,
-                         callback: Callable[[str], None] = None) -> Tuple[bool, str]:
-        """创建并启动Docker容器"""
-        if container_name is None:
-            container_name = self.generate_container_name()
+    def start_container(self, name: str) -> Tuple[bool, str]:
+        """启动已停止的容器"""
+        code, out, err = self.ssh.execute(f"docker start {name}")
+        if code == 0:
+            return True, (out or "").strip() or name
+        return False, (err or out).strip() or f"启动失败 (exit_code={code})"
 
-        # 如果容器已存在, 先删除
+    def list_images(self) -> List[dict]:
+        """列出执行机上全部镜像(供用户选择, 前端按需过滤 aisbench)"""
+        code, out, _ = self.ssh.execute(
+            "docker images --format "
+            "'{{.Repository}}\\t{{.Tag}}\\t{{.ID}}\\t{{.Size}}\\t{{.CreatedAt}}'"
+        )
+        items: List[dict] = []
+        if code != 0:
+            return items
+        for line in out.strip().splitlines():
+            parts = line.split("\t")
+            if len(parts) < 4:
+                continue
+            repo, tag, image_id, size = parts[0], parts[1], parts[2], parts[3]
+            if repo == "<none>":
+                continue
+            items.append({
+                "repository": repo,
+                "tag": tag,
+                "name": f"{repo}:{tag}",
+                "id": image_id,
+                "size": size,
+                "created": parts[4] if len(parts) > 4 else "",
+            })
+        return items
+
+    def list_containers(self,
+                        prefixes=CONTAINER_LIST_PREFIXES) -> List[dict]:
+        """列出执行机上的 aisbench 测试容器(多用户共享的容器资源池)
+
+        仅返回指定前缀的容器, 其余容器(他人/其他业务)不可见也不可清理。
+        """
+        code, out, _ = self.ssh.execute(
+            "docker ps -a --format "
+            "'{{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.RunningFor}}'"
+        )
+        items: List[dict] = []
+        if code != 0:
+            return items
+        for line in out.strip().splitlines():
+            parts = line.split("\t")
+            if len(parts) < 3:
+                continue
+            name, image, status = parts[0], parts[1], parts[2]
+            if not any(name.startswith(p) for p in prefixes):
+                continue
+            items.append({
+                "name": name,
+                "image": image,
+                "status": status,
+                "running": status.lower().startswith("up"),
+                "created": parts[3] if len(parts) > 3 else "",
+            })
+        return items
+
+    def container_busy(self, name: str) -> Tuple[bool, str]:
+        """检测容器内是否有测试正在执行(docker top 检查测试进程)
+
+        无论测试是否由本服务启动(其他用户/手工 docker exec), 均可检测,
+        用于避免多个测试任务同时占用同一容器互相干扰。
+        """
+        code, out, _ = self.ssh.execute(
+            f"docker top {name} -o pid,cmd 2>/dev/null")
+        if code != 0:
+            return False, ""
+        for line in out.strip().splitlines()[1:]:
+            if BUSY_PROC_RE.search(line):
+                return True, line.strip()[:200]
+        return False, ""
+
+    def inspect_container(self, name: str) -> Optional[dict]:
+        """docker inspect 读取容器信息(镜像/状态/挂载), 用于选择已有容器
+
+        返回 None 表示容器不存在; 挂载解析:
+        - 代码挂载: 容器内路径含 aisbench_auto_tools_prefix
+        - 其余挂载视为模型目录挂载
+        """
+        code, out, _ = self.ssh.execute(
+            f"docker inspect --format "
+            f"'{{{{.Config.Image}}}}\\t{{{{.State.Status}}}}\\t"
+            f"{{{{json .HostConfig.Binds}}}}' {name} 2>/dev/null")
+        if code != 0 or not out.strip():
+            return None
+        line = out.strip().splitlines()[0]
+        parts = line.split("\t", 2)
+        image = parts[0]
+        state = parts[1] if len(parts) > 1 else "unknown"
+        try:
+            binds = json.loads(parts[2]) if len(parts) > 2 else []
+        except (ValueError, IndexError):
+            binds = []
+
+        mounts = []
+        for bind in binds or []:
+            seg = str(bind).split(":")
+            if len(seg) >= 2:
+                mounts.append({"host": seg[0], "container": seg[1]})
+
+        code_mount = None
+        model_mounts = []
+        for m in mounts:
+            if "aisbench_auto_tools_prefix" in m["container"]:
+                code_mount = m
+            else:
+                model_mounts.append(m)
+
+        return {
+            "name": name,
+            "image": image,
+            "state": state,
+            "running": state == "running",
+            "mounts": mounts,
+            "code_host_path": code_mount["host"] if code_mount else "",
+            "code_mount_path": code_mount["container"] if code_mount
+            else self.code_mount_path,
+            "model_mounts": model_mounts,
+            # MODEL_PATH 默认值: 第一个模型挂载的容器内路径
+            "model_path_hint": model_mounts[0]["container"] if model_mounts else "",
+            "work_dir": "",
+        }
+
+    def create_container(self, image_name: str, model_mount: str,
+                         code_host_path: str,
+                         container_name: str,
+                         callback: Callable[[str], None] = None) -> Tuple[bool, str]:
+        """创建并启动Docker容器(用户自定义名称, 已存在则报错而非覆盖)
+
+        model_mount: 要映射进容器的模型(父)目录, 宿主机路径原样映射,
+        该目录下的任意模型在容器内均以相同路径可见。
+        """
+        err = validate_container_name(container_name)
+        if err:
+            return False, err
+
+        # 多用户安全: 同名容器绝不静默删除, 让用户自行清理或换名
         if self.container_exists(container_name):
-            if callback:
-                callback(f"容器 {container_name} 已存在，正在删除旧容器...\n")
-            self.remove_container(container_name)
+            return False, (
+                f"容器名已被占用: {container_name}\n"
+                f"  请换一个名称, 或先在\"容器管理\"中删除该容器")
 
         cmd = (
             f"docker run -itd "
             f"--name {container_name} "
             f"--shm-size=1g "
             f"--net=host "
-            f"-v {model_path}:{model_path} "
+            f"-v {model_mount}:{model_mount} "
             f"-v {code_host_path}:{self.code_mount_path} "
             f"-w {self.code_mount_path} "
             f"{image_name} python3"
@@ -356,12 +522,6 @@ class DockerManager:
             if len(parts) > 1:
                 info['image'] = parts[1]
         return info
-
-    def stop_and_remove(self, callback: Callable[[str], None] = None):
-        """停止并删除容器"""
-        if self.container_name:
-            self.remove_container(self.container_name, callback)
-            self.container_name = None
 
     # ============================================================
     #  测试脚本执行与日志下载

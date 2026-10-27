@@ -10,6 +10,21 @@ from .deps import get_state
 router = APIRouter(prefix="/config", tags=["config"])
 
 
+def _resolve(state: AppState, container: str):
+    """解析目标容器: 显式指定优先, 兼容旧客户端回退到当前容器"""
+    name = (container or "").strip()
+    if name:
+        return state.docker_for_container(name)
+    return state.require_deploy()
+
+
+def _code_mount(state: AppState, container: str) -> str:
+    name = (container or "").strip()
+    if name:
+        return state.resolve_container(name).get("code_mount_path", "")
+    return state.deploy_info.code_mount_path if state.deploy_info else ""
+
+
 @router.get("/defaults")
 def defaults(state: AppState = Depends(get_state)):
     """默认配置 + 部署后的建议值"""
@@ -26,7 +41,7 @@ def defaults(state: AppState = Depends(get_state)):
 def preview(req: ConfigPayload, state: AppState = Depends(get_state)):
     """预览生成的 config.py 内容"""
     errors = cm.validate_config(req.config)
-    dataset_default = state.deploy_info.code_mount_path if state.deploy_info else ""
+    dataset_default = _code_mount(state, req.container)
     content = cm.generate_config_content(req.config, dataset_default)
     return {"content": content, "errors": errors}
 
@@ -34,13 +49,13 @@ def preview(req: ConfigPayload, state: AppState = Depends(get_state)):
 @router.post("/save")
 def save(req: ConfigPayload, state: AppState = Depends(get_state)):
     """保存配置到容器(写入挂载目录)并回读验证"""
-    docker = state.require_deploy()
+    docker = _resolve(state, req.container)
 
     errors = cm.validate_config(req.config)
     if errors:
         raise HTTPException(400, "配置验证失败: " + "; ".join(errors))
 
-    dataset_default = state.deploy_info.code_mount_path
+    dataset_default = _code_mount(state, req.container)
     content = cm.generate_config_content(req.config, dataset_default)
 
     if not cm.write_config_to_host(docker.ssh, docker.code_host_path, content):
@@ -72,7 +87,7 @@ def save(req: ConfigPayload, state: AppState = Depends(get_state)):
 @router.post("/verify")
 def verify(req: ConfigPayload, state: AppState = Depends(get_state)):
     """从容器回读 config.py 与界面值对比"""
-    docker = state.require_deploy()
+    docker = _resolve(state, req.container)
     read_back = cm.read_config_from_host(docker.ssh, docker.code_host_path)
     if read_back is None:
         raise HTTPException(400, "读取容器内 config.py 失败")
@@ -86,9 +101,9 @@ def verify(req: ConfigPayload, state: AppState = Depends(get_state)):
 
 
 @router.get("/read")
-def read(state: AppState = Depends(get_state)):
+def read(container: str = "", state: AppState = Depends(get_state)):
     """读取容器内当前 config.py"""
-    docker = state.require_deploy()
+    docker = _resolve(state, container)
     content = cm.read_config_from_host(docker.ssh, docker.code_host_path)
     if content is None:
         raise HTTPException(400, "读取容器内 config.py 失败")

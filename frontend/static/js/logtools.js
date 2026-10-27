@@ -37,7 +37,7 @@ export function initLogtools() {
   // 筛选 / 查看 / 填入
   $("#ltGrepBtn").addEventListener("click", grepKv);
   $("#ltViewBtn").addEventListener("click", viewLog);
-  $("#ltFillBtn").addEventListener("click", fillStep5);
+  $("#ltFillBtn").addEventListener("click", fillStep4);
 
   window.refreshLogtoolsStatus = refreshStatus;
   refreshStatus();
@@ -325,18 +325,18 @@ async function viewLog() {
 }
 
 
-/* ============ 填入步骤 5 ============ */
+/* ============ 填入步骤 4 ============ */
 
-function fillStep5() {
+function fillStep4() {
   if (!lastParsed) return;
   if (lastParsed.kv != null) {
     $("#kvCache").value = lastParsed.kv;
   }
   if (lastParsed.max_len != null) {
     $("#kvMaxLen").value = lastParsed.max_len;
-    // 触发步骤5的输入长度chips刷新
+    // 触发步骤4的输入长度chips刷新
     $("#kvMaxLen").dispatchEvent(new Event("input", { bubbles: true }));
   }
-  toast("已填入步骤 5 的 KV cache 参数", "success");
-  import("./main.js").then(m => m.showView("step5"));
+  toast("已填入步骤 4 的 KV cache 参数", "success");
+  import("./main.js").then(m => m.showView("step4"));
 }

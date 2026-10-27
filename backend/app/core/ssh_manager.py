@@ -4,6 +4,10 @@
 - 密钥加载自动尝试 RSA / Ed25519 / ECDSA
 - execute_with_callback 支持捕获累计输出(用于解析 docker load 结果)
 - 跟踪当前活动 channel, 支持 cancel_active() 主动中断远程命令
+- PTY 输出归一化: get_pty 后终端驱动会把 \n 转为 \r\n(ONLCR),
+  若不处理, 前端会把 \r 当作进度条刷新导致整行内容被清空(v1.0.6 步骤6
+  执行日志只滚动不显示内容的根因)。这里统一把 \r\n 还原为 \n, 并用
+  carry 缓冲处理 \r 与 \n 被拆在两个 chunk 的边界情况。
 - list_dir 失败时抛出 RemoteFSError(便于 Web 层返回明确错误)
 """
 
@@ -122,6 +126,7 @@ class SSHManager:
             return (-1, "") if capture else -1
 
         chunks: List[str] = []
+        carry = ""
         try:
             transport = self.client.get_transport()
             channel = transport.open_session()
@@ -136,6 +141,14 @@ class SSHManager:
                 if channel.recv_ready():
                     data = channel.recv(4096).decode('utf-8', errors='replace')
                     if data:
+                        data = carry + data
+                        # 结尾的 \r 可能是跨 chunk 的 \r\n, 暂存等下一个 chunk
+                        if data.endswith("\r"):
+                            carry = "\r"
+                            data = data[:-1]
+                        else:
+                            carry = ""
+                        data = data.replace("\r\n", "\n")
                         if capture:
                             chunks.append(data)
                         if callback:
@@ -144,6 +157,13 @@ class SSHManager:
                     while channel.recv_ready():
                         data = channel.recv(4096).decode('utf-8', errors='replace')
                         if data:
+                            data = carry + data
+                            if data.endswith("\r"):
+                                carry = "\r"
+                                data = data[:-1]
+                            else:
+                                carry = ""
+                            data = data.replace("\r\n", "\n")
                             if capture:
                                 chunks.append(data)
                             if callback:

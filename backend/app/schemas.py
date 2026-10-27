@@ -16,10 +16,21 @@ class SSHConnectRequest(BaseModel):
     timeout: int = Field(default=10, ge=1, le=120)
 
 
-# ------------------------------------------------------------ 部署
+# ------------------------------------------------------------ 容器 / 部署(创建容器)
+
+class ContainerSelectRequest(BaseModel):
+    """选择已有容器(force: 容器正在执行测试时仍强制选择)"""
+    name: str = Field(min_length=1)
+    force: bool = False
+
+
+class ContainerNameRequest(BaseModel):
+    name: str = Field(min_length=1)
 
 class ImageSource(BaseModel):
-    type: str = Field(pattern="^(upload|remote)$")
+    """镜像来源: existing=执行机已有镜像 / upload=上传tar / remote=远程tar"""
+    type: str = Field(pattern="^(existing|upload|remote)$")
+    name: Optional[str] = None
     upload_id: Optional[str] = None
     remote_path: Optional[str] = None
 
@@ -31,7 +42,8 @@ class CodeSource(BaseModel):
 
 class DeployStartRequest(BaseModel):
     image: ImageSource
-    model_path: str = Field(min_length=1)
+    model_mount: str = Field(min_length=1)          # 映射进容器的模型(父)目录
+    container_name: str = Field(min_length=1)       # 用户自定义, aisbench_ 前缀
     work_dir: str = "/tmp/AISBench_Prefix_Tools"
     code: CodeSource = Field(default_factory=lambda: CodeSource(source="builtin"))
     clean_work_dir: bool = False
@@ -45,6 +57,7 @@ class RemoteTarCheckRequest(BaseModel):
 
 class ConfigPayload(BaseModel):
     config: Dict[str, str]
+    container: Optional[str] = None
 
 
 # ------------------------------------------------------------ 测试用例
@@ -87,12 +100,14 @@ class DesignerScriptRequest(DesignerCasesRequest):
 class ExecuteStartRequest(BaseModel):
     designer: Dict
     run_name: Optional[str] = None
+    container: Optional[str] = None
 
 
 # ------------------------------------------------------------ 清理
 
 class CleanupRequest(BaseModel):
-    remove_container: bool = True
+    """清理: 显式指定要删除的容器名(仅允许 aisbench 前缀), 绝不模糊删除"""
+    containers: List[str] = Field(default_factory=list)
     clean_work_dir: bool = True
     work_dir: Optional[str] = None
 
