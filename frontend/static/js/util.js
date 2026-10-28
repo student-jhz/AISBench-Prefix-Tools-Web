@@ -62,6 +62,36 @@ export function debounce(fn, ms = 300) {
   };
 }
 
+/** 密码显示/隐藏切换(带可见的状态反馈)
+ *
+ * v2.0.5: 旧实现只切 input.type, 按钮图标/提示不变 —— 输入框为空或
+ * 浏览器密码管理器接管时用户完全看不到变化, 误以为"功能不生效"。
+ * 现在每次切换同步更新 👁/🙈 图标、title 与 aria-pressed, 状态一目了然。
+ */
+export function bindPasswordToggle(inputSel, btnSel) {
+  const input = typeof inputSel === "string"
+    ? document.querySelector(inputSel) : inputSel;
+  const btn = typeof btnSel === "string"
+    ? document.querySelector(btnSel) : btnSel;
+  if (!input || !btn) return () => {};
+
+  const render = () => {
+    const show = input.type === "text";
+    btn.textContent = show ? "🙈" : "👁";
+    btn.title = show ? "隐藏密码" : "显示密码";
+    btn.setAttribute("aria-pressed", show ? "true" : "false");
+    btn.classList.toggle("pw-visible", show);
+  };
+
+  btn.addEventListener("click", () => {
+    input.type = input.type === "password" ? "text" : "password";
+    render();
+    try { input.focus({ preventScroll: true }); } catch { /* ignore */ }
+  });
+  render();
+  return render;
+}
+
 /** Toast 通知 */
 export function toast(message, type = "info", duration = 3200) {
   const icons = { success: "✓", error: "✗", warning: "⚠", info: "ℹ" };

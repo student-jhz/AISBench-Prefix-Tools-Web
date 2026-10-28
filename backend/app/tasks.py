@@ -70,7 +70,48 @@ class TaskManager:
         # execute 任务按容器名分槽: 容器 -> TaskRun
         self._exec_tasks: dict = {}
         self._last_exec: Optional[TaskRun] = None
+        # v2.0.5 容器执行状态注册表(权威数据源): 容器 -> 状态 dict
+        # 记录 status/phase/run_id/script_running 等并持久化到
+        # data/exec_state.json —— busy 显示不再依赖 docker top 猜测。
+        self._exec_registry: dict = {}
         self._lock = threading.Lock()
+        self._restore_registry()
+
+    def _restore_registry(self):
+        """启动时恢复执行状态注册表; 上次服务停止时仍为 running 的任务
+        标记为 interrupted(任务线程已不存在, 不再占用容器)。"""
+        data = self.state.load_exec_state()
+        if not data:
+            return
+        now = datetime.now().isoformat(timespec="seconds")
+        for name, entry in data.items():
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("status") == "running":
+                entry["status"] = "interrupted"
+                entry["ended_at"] = now
+                entry["error"] = "服务重启, 任务状态中断(实际进程由 docker top 检测)"
+                entry["script_running"] = False
+            self._exec_registry[str(name)] = entry
+        self.state.save_exec_state(dict(self._exec_registry))
+
+    def _set_exec_state(self, container: str, **fields):
+        """更新容器执行状态并持久化(小文件, 写入开销可忽略)"""
+        with self._lock:
+            entry = self._exec_registry.setdefault(container, {
+                "container": container,
+                "status": "idle",
+                "phase": "",
+                "run_id": "",
+                "started_at": "",
+                "ended_at": "",
+                "script_running": False,
+                "error": "",
+            })
+            entry.update(fields)
+            entry.setdefault("container", container)
+            self.state.save_exec_state(
+                {k: dict(v) for k, v in self._exec_registry.items()})
 
     # ------------------------------------------------------------ 任务控制
 
@@ -125,6 +166,34 @@ class TaskManager:
         with self._lock:
             task = self._exec_tasks.get(container)
             return bool(task and task.status == "running")
+
+    def exec_state(self, container: str) -> dict:
+        """容器执行状态(后台数据, 权威): 注册表 + 运行中任务的实时 phase"""
+        container = (container or "").strip()
+        result = {
+            "container": container,
+            "status": "idle",
+            "phase": "",
+            "run_id": "",
+            "started_at": "",
+            "ended_at": "",
+            "script_running": False,
+            "error": "",
+        }
+        with self._lock:
+            entry = dict(self._exec_registry.get(container) or {})
+            task = self._exec_tasks.get(container)
+        result.update(entry)
+        if task is not None:
+            result.update({
+                "container": container,
+                "status": task.status,
+                "phase": task.phase,
+                "error": task.error or result.get("error", ""),
+                "started_at": task.started_at,
+                "ended_at": task.ended_at,
+            })
+        return result
 
     def cancel_execute(self, container: str = "") -> bool:
         with self._lock:
@@ -352,6 +421,12 @@ class TaskManager:
             task = TaskRun(kind="execute", key=container)
             self._exec_tasks[container] = task
             self._last_exec = task
+        # 任务启动即写入后台执行状态(用户可见的权威 busy 数据)
+        self._set_exec_state(
+            container,
+            status="running", phase="启动中", run_id=run_id,
+            started_at=datetime.now().isoformat(timespec="seconds"),
+            ended_at="", script_running=False, error="")
 
         def wrapper():
             try:
@@ -367,6 +442,13 @@ class TaskManager:
                 traceback.print_exc()
             finally:
                 task.ended_at = datetime.now().isoformat(timespec="seconds")
+                # 任务无论成败/取消, 执行状态必须迁移出 running,
+                # 界面据此自动消除"测试执行中"。
+                self._set_exec_state(
+                    container,
+                    status=task.status, phase=task.phase,
+                    ended_at=task.ended_at,
+                    script_running=False, error=task.error)
 
         task.thread = threading.Thread(
             target=wrapper, daemon=True,
@@ -427,7 +509,14 @@ class TaskManager:
         log(f"  脚本路径(容器内): {container_script}\n")
         log("  开始执行测试 (这可能需要较长时间)...\n\n")
 
-        exit_code = docker.run_script("run_tests.sh", callback=log, timeout=7200)
+        # script_running 精确标记"容器内测试脚本正在跑"的阶段:
+        # 脚本退出后进入日志下载/解析, 容器实际已空闲。
+        self._set_exec_state(container, script_running=True)
+        try:
+            exit_code = docker.run_script("run_tests.sh", callback=log,
+                                          timeout=7200)
+        finally:
+            self._set_exec_state(container, script_running=False)
 
         if task.cancel_event.is_set():
             raise TaskCancelled()

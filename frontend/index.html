@@ -588,7 +588,12 @@
                 <div class="form-item"><label>IP</label><input type="text" id="ltHost"></div>
                 <div class="form-item"><label>端口</label><input type="number" id="ltPort" value="22"></div>
                 <div class="form-item"><label>用户名</label><input type="text" id="ltUser" value="root"></div>
-                <div class="form-item"><label>密码</label><input type="password" id="ltPassword"></div>
+                <div class="form-item"><label>密码</label>
+                  <div class="input-group">
+                    <input type="password" id="ltPassword" autocomplete="new-password">
+                    <button class="btn btn-ghost btn-sm" id="ltPwToggle" type="button" title="显示/隐藏">👁</button>
+                  </div>
+                </div>
               </div>
               <div class="form-actions">
                 <button class="btn btn-primary btn-sm" id="ltConnectBtn">连接</button>

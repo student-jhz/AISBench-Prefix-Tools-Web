@@ -29,6 +29,8 @@ export function initStep5() {
   };
   window.refreshRuns = refreshRuns;
   window.refreshExecContainer = refreshExecContainer;
+  // step2 的 busy 轮询直接回调渲染(共享一次 /busy 查询, 不重复请求)
+  window.renderExecContainerCard = renderExecContainerCard;
   // 页面刷新后恢复显示最近一次测试结果(与上游桌面版"结果摘要"面板一致)
   restoreLastResult();
   refreshExecContainer();
@@ -161,9 +163,28 @@ async function restoreLastResult() {
 /* ============ 执行容器状态(含测试执行感知) ============ */
 
 async function refreshExecContainer(force = false) {
+  const info = G.containerInfo;
+  if (!info?.name) {
+    renderExecContainerCard(null);
+    return;
+  }
+  // 实时查询 busy 状态: 让用户在执行前感知容器是否被占用
+  try {
+    const st = await api.get(
+      `/api/containers/busy?name=${encodeURIComponent(info.name)}`, { silent: true });
+    G.containerInfo = { ...G.containerInfo, ...st, name: info.name };
+    renderExecContainerCard(st);
+  } catch {
+    renderExecContainerCard();
+  }
+  if (force) toast("容器状态已刷新", "info", 1500);
+}
+
+/** 渲染执行容器卡片(st 为空时回退到 G.containerInfo) */
+function renderExecContainerCard(st) {
   const grid = $("#execContainerGrid");
   const banner = $("#execBusyBanner");
-  const info = G.containerInfo;
+  const info = st || G.containerInfo;
   if (!info?.name) {
     grid.innerHTML = "";
     grid.append(el("div", { class: "info-item" },
@@ -189,49 +210,60 @@ async function refreshExecContainer(force = false) {
       el("div", { class: "info-label" }, "测试执行"),
       el("div", { class: "info-value" }, info.busy ? "测试执行中" : "空闲")));
 
-  // 实时查询 busy 状态: 让用户在执行前感知容器是否被占用
-  try {
-    const st = await api.get(
-      `/api/containers/busy?name=${encodeURIComponent(info.name)}`, { silent: true });
-    G.containerInfo = { ...G.containerInfo, ...st, name: info.name };
-    // 状态回填后重渲染信息网格(否则网格仍是查询前的旧状态)
-    grid.innerHTML = "";
-    grid.append(
-      el("div", { class: "info-item" },
-        el("div", { class: "info-label" }, "容器名称"),
-        el("div", { class: "info-value" }, info.name)),
-      el("div", { class: "info-item" },
-        el("div", { class: "info-label" }, "镜像"),
-        el("div", { class: "info-value" }, info.image || "-")),
-      el("div", { class: "info-item" },
-        el("div", { class: "info-label" }, "状态"),
-        el("div", { class: "info-value" },
-          st.running ? "运行中" : `已停止 (${st.state || "-"})`)),
-      el("div", { class: "info-item" },
-        el("div", { class: "info-label" }, "测试执行"),
-        el("div", { class: "info-value" }, st.busy ? "测试执行中" : "空闲")));
-    const btn = $("#executeStartBtn");
-    if (st.busy) {
-      banner.hidden = false;
-      banner.className = "busy-banner warn";
-      banner.textContent =
-        `⏳ 容器 ${info.name} 正在执行测试` +
-        `${st.busy_detail ? `: ${st.busy_detail}` : ""}` +
-        " —— 请等待完成, 或在步骤 2 新建容器执行新任务。";
-      btn.disabled = true;
-    } else if (!st.running) {
-      banner.hidden = false;
-      banner.className = "busy-banner error";
-      banner.textContent = `⚠ 容器 ${info.name} 未运行, 请先在步骤 2 启动容器。`;
-      btn.disabled = true;
+  // 状态回填后重渲染信息网格(否则网格仍是查询前的旧状态)
+  grid.innerHTML = "";
+  grid.append(
+    el("div", { class: "info-item" },
+      el("div", { class: "info-label" }, "容器名称"),
+      el("div", { class: "info-value" }, info.name)),
+    el("div", { class: "info-item" },
+      el("div", { class: "info-label" }, "镜像"),
+      el("div", { class: "info-value" }, info.image || "-")),
+    el("div", { class: "info-item" },
+      el("div", { class: "info-label" }, "状态"),
+      el("div", { class: "info-value" },
+        info.running ? "运行中" : `已停止 (${info.state || "-"})`)),
+    el("div", { class: "info-item" },
+      el("div", { class: "info-label" }, "测试执行"),
+      el("div", { class: "info-value" }, execStateText(info))));
+  const btn = $("#executeStartBtn");
+  if (info.busy) {
+    banner.hidden = false;
+    banner.className = "busy-banner warn";
+    const task = info.task || {};
+    let text;
+    if (info.executing_here) {
+      text = task.script_running
+        ? `⏳ 容器 ${info.name} 正在执行测试${task.run_id ? ` (run: ${task.run_id})` : ""}`
+        : `⏳ 测试脚本已结束, 正在${task.phase || "处理日志/结果"}, 容器即将空闲`;
     } else {
-      banner.hidden = true;
-      if (!G.state?.tasks?.execute?.running) btn.disabled = false;
+      text = `⏳ 容器 ${info.name} 检测到测试进程(可能他人使用)`;
     }
-  } catch {
+    if (info.busy_detail) text += `: ${info.busy_detail}`;
+    text += " —— 请等待完成, 或在步骤 2 新建容器执行新任务。";
+    banner.textContent = text;
+    btn.disabled = true;
+  } else if (!info.running) {
+    banner.hidden = false;
+    banner.className = "busy-banner error";
+    banner.textContent = `⚠ 容器 ${info.name} 未运行, 请先在步骤 2 启动容器。`;
+    btn.disabled = true;
+  } else {
     banner.hidden = true;
+    if (!G.state?.tasks?.execute?.running) btn.disabled = false;
   }
-  if (force) toast("容器状态已刷新", "info", 1500);
+}
+
+/** 测试执行状态文案(与步骤 2 卡片一致) */
+function execStateText(info) {
+  if (info.executing_here) {
+    const task = info.task || {};
+    if (task.script_running) return "测试执行中";
+    if (task.status === "running") return `收尾中(${task.phase || "日志处理"})`;
+    return "空闲";
+  }
+  if (info.process_detected) return "检测到测试进程(可能他人使用)";
+  return "空闲";
 }
 
 

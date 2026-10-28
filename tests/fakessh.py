@@ -88,13 +88,16 @@ class FakeSSH:
             return 0, out, ""
 
         # ---- v2.0.1 容器资源池: 容器列表(逐行 JSON, 含已停止) ----
+        # v2.0.5: Names 用逗号分隔字符串 —— 与真实 docker 完全一致。
+        # (旧替身返回数组, 掩盖了生产端 list_containers 按数组取
+        # names[0] 得到首字符 "a"、列表恒为空的 bug)
         if "docker ps -a --format" in command and "{{json .}}" in command:
             out = ""
             for name, status in self.containers.items():
                 meta = self.container_meta.get(name, {})
                 state = "running" if status.lower().startswith("up") else "exited"
                 out += json.dumps({
-                    "Names": [name],
+                    "Names": name,
                     "Image": meta.get("image", "fakeimage:latest"),
                     "State": state,
                     "Status": status,
@@ -140,7 +143,9 @@ class FakeSSH:
             name = m.group(1) if m else ""
             if name not in self.containers:
                 return 1, "", "Error: No such container: " + name
-            out = "PID\tCMD\n1234\tpython3\n"
+            # 始终带一行 defunct 僵尸(命令行含 run_tests.sh):
+            # 回归保障 —— 僵尸进程不得判定为"正在执行测试"
+            out = "PID\tCMD\n1234\tpython3\n1300\tbash run_tests.sh <defunct>\n"
             if name in self.busy_containers:
                 out += "2345\tbash run_tests.sh\n"
             return 0, out, ""

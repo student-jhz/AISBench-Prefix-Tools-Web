@@ -12,6 +12,7 @@ let containersCache = [];
 let imagesCache = [];
 let selectedImage = null;      // {name, ...}
 let lastDeployRunning = false;
+let busyPollTimer = null;      // busy 期间 5s 轮询, 任务结束后自动消除提示
 
 
 export function initStep2() {
@@ -96,9 +97,15 @@ function statusBadge(c) {
 
 function busyBadge(c) {
   if (!c.running) return el("span", { class: "tag tag-muted" }, "-");
-  return c.busy
-    ? el("span", { class: "tag tag-warn", title: c.busy_detail || "" }, "⏳ 测试执行中")
-    : el("span", { class: "tag tag-ok" }, "空闲");
+  if (!c.busy) return el("span", { class: "tag tag-ok" }, "空闲");
+  // v2.0.5: 区分"本服务任务执行中"与"检测到他人测试进程"
+  const label = c.executing_here
+    ? (c.busy_source === "both" ? "⏳ 测试执行中(含外部进程)" : "⏳ 测试执行中")
+    : "⏳ 检测到测试进程";
+  return el("span", {
+    class: "tag tag-warn",
+    title: c.busy_detail || "后台任务或容器内测试进程占用中",
+  }, label);
 }
 
 function rowActions(c) {
@@ -135,15 +142,23 @@ async function selectContainer(name, force = false) {
       if (!ok) return;
       return selectContainer(name, true);
     }
-    applyContainer(data.info, data.busy);
+    applyContainer({
+      ...data.info,
+      busy: data.busy,
+      busy_detail: data.busy_detail,
+      executing_here: data.executing_here,
+      process_detected: data.process_detected,
+      busy_source: data.busy_source,
+      task: data.task,
+    });
   } catch (err) {
     toast(err.message, "error", 6000);
   }
 }
 
 /** 应用选中的容器: 记住选择(本浏览器), 切换执行日志通道, 刷新卡片 */
-export function applyContainer(info, busy = false) {
-  G.containerInfo = { ...info, busy };
+export function applyContainer(info) {
+  G.containerInfo = { ...info };
   saveContainer(info.name);
   switchExecChannel(info.name);
   updateCurrentCard();
@@ -633,25 +648,75 @@ function renderCurrentGrid() {
     infoItem("容器名称", info.name),
     infoItem("镜像", info.image || "-"),
     infoItem("状态", info.running ? "运行中" : `已停止 (${info.state || "-"})`),
-    infoItem("测试执行", info.busy ? "测试执行中" : "空闲"),
+    infoItem("测试执行", execStateText(info)),
     infoItem("模型目录挂载", mounts),
     infoItem("代码路径(宿主机)", info.code_host_path || "-"),
   );
+}
+
+/** 测试执行状态文案: 注册表(本服务任务)权威, docker top 仅补充他人占用 */
+function execStateText(info) {
+  if (info.executing_here) {
+    const task = info.task || {};
+    if (task.script_running) return "测试执行中";
+    if (task.status === "running") return `收尾中(${task.phase || "日志处理"})`;
+    return "空闲";
+  }
+  if (info.process_detected) return "检测到测试进程(可能他人使用)";
+  return "空闲";
 }
 
 /** 查询实时状态(busy/running), 回填后重渲染信息网格与横幅 */
 async function refreshCurrentStatus() {
   const name = G.containerInfo?.name;
   if (!name) return;
+  let st = null;
   try {
-    const st = await api.get(
+    st = await api.get(
       `/api/containers/busy?name=${encodeURIComponent(name)}`, { silent: true });
     G.containerInfo = { ...G.containerInfo, ...st, name };
   } catch { /* 忽略实时状态错误 */ }
   renderCurrentGrid();
   renderCurrentBanner();
-  // 同步步骤5的执行容器卡片
-  window.refreshExecContainer?.();
+  // 同步步骤5的执行容器卡片(直接复用本次查询结果, 不重复请求)
+  if (st) window.renderExecContainerCard?.(st);
+  // busy 期间保持轮询: 任务结束后界面自动消除"测试执行中"(v2.0.5)
+  ensureBusyPolling();
+}
+
+/** busy 状态轮询: 每 5s 刷新一次 /busy, 不再依赖用户手动刷新 */
+function ensureBusyPolling() {
+  const info = G.containerInfo;
+  if (info?.busy) {
+    if (!busyPollTimer) {
+      busyPollTimer = setInterval(async () => {
+        const name = G.containerInfo?.name;
+        if (!name) { stopBusyPolling(); return; }
+        try {
+          const st = await api.get(
+            `/api/containers/busy?name=${encodeURIComponent(name)}`,
+            { silent: true });
+          G.containerInfo = { ...G.containerInfo, ...st, name };
+          renderCurrentGrid();
+          renderCurrentBanner();
+          window.renderExecContainerCard?.(st);
+          if (!st.busy) {
+            stopBusyPolling();
+            window.pollRunningTask?.();
+          }
+        } catch { /* SSH 短暂失败时下轮再试 */ }
+      }, 5000);
+    }
+  } else {
+    stopBusyPolling();
+  }
+}
+
+function stopBusyPolling() {
+  if (busyPollTimer) {
+    clearInterval(busyPollTimer);
+    busyPollTimer = null;
+  }
 }
 
 /** 渲染 busy / 未运行横幅(含启动按钮) */
@@ -664,9 +729,20 @@ function renderCurrentBanner() {
   if (info.busy) {
     banner.hidden = false;
     banner.className = "busy-banner warn";
-    banner.textContent =
-      `⏳ 该容器正在执行测试${info.busy_detail ? `: ${info.busy_detail}` : ""} —— ` +
-      "如需执行新测试任务, 建议新建一个容器。";
+    const task = info.task || {};
+    let text;
+    if (info.executing_here) {
+      text = task.script_running
+        ? `⏳ 该容器正在执行测试${task.run_id ? ` (run: ${task.run_id})` : ""} —— `
+        : `⏳ 测试脚本已结束, 正在${task.phase || "处理日志/结果"} —— 容器即将空闲。`;
+    } else {
+      text = "⏳ 检测到容器内测试进程(可能由其他用户/手工启动)";
+    }
+    if (info.busy_detail) text += `\n进程: ${info.busy_detail}`;
+    text += info.executing_here
+      ? "\n如需执行新测试任务, 建议新建一个容器。"
+      : "\n不建议选择该容器, 建议新建容器执行新测试任务。";
+    banner.textContent = text;
   } else if (!info.running) {
     banner.hidden = false;
     banner.className = "busy-banner error";
@@ -694,7 +770,10 @@ async function reinspectCurrentContainer() {
       { name, force: true }, { silent: true });
     if (data.selected) {
       G.containerInfo = { ...G.containerInfo, ...data.info,
-        busy: data.busy, busy_detail: data.busy_detail };
+        busy: data.busy, busy_detail: data.busy_detail,
+        executing_here: data.executing_here,
+        process_detected: data.process_detected,
+        busy_source: data.busy_source, task: data.task };
     }
   } catch { /* 容器可能已被删除 */ }
   updateCurrentCard();
@@ -717,7 +796,11 @@ async function restoreSelection() {
     const data = await api.post(
       "/api/containers/select", { name: G.container, force: true }, { silent: true });
     if (data.selected) {
-      G.containerInfo = data.info;
+      G.containerInfo = { ...data.info,
+        busy: data.busy, busy_detail: data.busy_detail,
+        executing_here: data.executing_here,
+        process_detected: data.process_detected,
+        busy_source: data.busy_source, task: data.task };
       switchExecChannel(data.info.name);
       updateCurrentCard();
       updateNavLocksSafe();

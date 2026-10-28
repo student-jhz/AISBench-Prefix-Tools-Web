@@ -31,6 +31,8 @@ MANAGED_CONTAINER_RE = re.compile(r"^aisbench[-_][A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 # 容器内正在执行测试的进程特征(run_tests.sh / aisbench_test.py)
 BUSY_PROC_RE = re.compile(r"run_tests\.sh|aisbench_test\.py")
+# 僵尸进程行: "123 [bash]" / "124 [python3] <defunct>"
+ZOMBIE_PROC_RE = re.compile(r"^\d+\s+\[[^\]]*\]")
 
 
 def validate_container_name(name: str) -> Optional[str]:
@@ -256,6 +258,11 @@ class DockerManager:
 
         仅返回指定前缀的容器, 其余容器(他人/其他业务)不可见也不可清理。
         使用 --format '{{json .}}' 逐行 JSON, 规避 \\t 转义问题(见 list_images)。
+
+        v2.0.5 回归修复: 真实 `docker ps --format '{{json .}}'` 的 Names
+        字段是**逗号分隔字符串**(如 "aisbench_a,aisbench_a2"), 而非数组。
+        旧代码按数组取 names[0] 得到首字符 "a", 永远匹配不上
+        aisbench_ 前缀 → 列表恒为空(测试替身曾返回数组, 掩盖了该 bug)。
         """
         code, out, _ = self.ssh.execute(
             "docker ps -a --format '{{json .}}'", timeout=15
@@ -268,7 +275,13 @@ class DockerManager:
                 row = json.loads(line)
             except ValueError:
                 continue
-            names = row.get("Names") or []
+            raw_names = row.get("Names") or ""
+            if isinstance(raw_names, str):
+                names = [n.strip() for n in raw_names.split(",") if n.strip()]
+            elif isinstance(raw_names, (list, tuple)):
+                names = [str(n).strip() for n in raw_names if str(n).strip()]
+            else:
+                names = []
             name = names[0] if names else ""
             if not any(name.startswith(p) for p in prefixes):
                 continue
@@ -289,14 +302,23 @@ class DockerManager:
 
         无论测试是否由本服务启动(其他用户/手工 docker exec), 均可检测,
         用于避免多个测试任务同时占用同一容器互相干扰。
+
+        v2.0.5: 跳过僵尸进程(defunct/[bash]) —— 测试结束后容器 PID 1
+        不收尸时, defunct 进程命令行仍含 run_tests.sh, 曾导致容器
+        "永远显示正在执行测试"。
         """
         code, out, _ = self.ssh.execute(
             f"docker top {name} -o pid,cmd 2>/dev/null", timeout=15)
         if code != 0:
             return False, ""
         for line in out.strip().splitlines()[1:]:
-            if BUSY_PROC_RE.search(line):
-                return True, line.strip()[:200]
+            cmd = line.strip()
+            # 僵尸进程: "123 [bash]" / "... <defunct>" —— 已退出, 不算占用
+            if (not cmd or "defunct" in cmd.lower()
+                    or ZOMBIE_PROC_RE.match(cmd)):
+                continue
+            if BUSY_PROC_RE.search(cmd):
+                return True, cmd[:200]
         return False, ""
 
     def list_container_dirs(self, name: str,

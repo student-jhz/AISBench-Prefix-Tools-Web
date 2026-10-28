@@ -127,6 +127,7 @@ class SSHManager:
 
         chunks: List[str] = []
         carry = ""
+        channel = None
         try:
             transport = self.client.get_transport()
             channel = transport.open_session()
@@ -137,6 +138,7 @@ class SSHManager:
                 self._active_channel = channel
 
             deadline = time.time() + timeout
+            eof_seen_at = None
             while True:
                 if channel.recv_ready():
                     data = channel.recv(4096).decode('utf-8', errors='replace')
@@ -169,6 +171,18 @@ class SSHManager:
                             if callback:
                                 callback(data)
                     break
+                # v2.0.5: 远端已 EOF/关闭却迟迟不送退出状态(PTY 被测试脚本
+                # 派生的后台进程占住时会出现) —— 等待 2s 后强制收尾,
+                # 避免任务永远停在 running → 容器一直显示"测试执行中"。
+                if channel.eof_received or channel.closed:
+                    if eof_seen_at is None:
+                        eof_seen_at = time.time()
+                    elif time.time() - eof_seen_at > 2:
+                        if callback:
+                            callback("\n[WARN] 远端通道已关闭但未返回退出状态, 按结束处理\n")
+                        break
+                    time.sleep(0.05)
+                    continue
                 if timeout and time.time() > deadline:
                     channel.close()
                     if callback:
@@ -184,6 +198,11 @@ class SSHManager:
         finally:
             with self._channel_lock:
                 self._active_channel = None
+            if channel is not None:
+                try:
+                    channel.close()
+                except Exception:  # noqa: BLE001 - 关闭失败不影响结果
+                    pass
 
     def cancel_active(self):
         """主动关闭当前活动 channel, 用于取消正在执行的远程命令"""

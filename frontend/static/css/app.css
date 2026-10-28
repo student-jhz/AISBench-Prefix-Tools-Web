@@ -200,6 +200,7 @@ input:disabled { background: #f8fafc; color: var(--text-muted); }
 .btn-danger:hover:not(:disabled) { background: var(--error-bg); }
 .btn-ghost { background: transparent; color: var(--text-muted); }
 .btn-ghost:hover:not(:disabled) { background: #f1f5f9; color: var(--text); }
+.btn-ghost.pw-visible { background: #f1f5f9; color: var(--text); } /* 密码已明文显示 */
 .btn-sm { height: 28px; padding: 0 10px; font-size: 12px; border-radius: 6px; }
 .btn-lg { height: 42px; padding: 0 24px; font-size: 14px; }
 

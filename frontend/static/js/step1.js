@@ -1,6 +1,6 @@
 /** 步骤 1: SSH 连接执行机 */
 
-import { $, setMsg, toast } from "./util.js";
+import { $, bindPasswordToggle, setMsg, toast } from "./util.js";
 import { api } from "./api.js";
 import { G, refreshState } from "./main.js";
 
@@ -16,10 +16,8 @@ export function initStep1() {
 
   let keyUploadId = null;
 
-  // 密码显示切换
-  $("#sshPwToggle").addEventListener("click", () => {
-    pwEl.type = pwEl.type === "password" ? "text" : "password";
-  });
+  // 密码显示/隐藏切换(v2.0.5: 图标/提示/aria 状态随切换同步变化)
+  bindPasswordToggle(pwEl, $("#sshPwToggle"));
 
   // 回填上次连接信息(凭据保存在服务端, 服务重启后自动重连)
   restoreSshForm();

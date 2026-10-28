@@ -563,6 +563,22 @@ class TestContainersAPI:
                    json={"name": "aisbench_busy_box", "force": True})
         assert r.json()["selected"] is True
 
+    def test_busy_endpoint_reports_detection_sources(self, client, tmp_path):
+        """v2.0.5: /busy 拆分 executing_here(注册表) 与 process_detected(docker top)"""
+        c, ssh, _ = client
+        self._create(c, tmp_path, "aisbench_src_box")
+        ssh.busy_containers.add("aisbench_src_box")
+
+        r = c.get("/api/containers/busy", params={"name": "aisbench_src_box"})
+        data = r.json()
+        # 外部进程占用: 注册表无任务, 但 docker top 检测到
+        assert data["busy"] is True
+        assert data["executing_here"] is False
+        assert data["process_detected"] is True
+        assert data["busy_source"] == "process"
+        assert data["task"]["status"] == "idle"
+        assert "run_tests.sh" in data["busy_detail"]
+
     def test_select_missing_container(self, client):
         c, _, _ = client
         connect_ssh(c)
@@ -805,6 +821,72 @@ class TestExecuteFlow:
         r = c.get(f"/api/results/{run_id}/download-zip")
         assert r.status_code == 200
         assert r.headers["content-type"] == "application/zip"
+
+    def test_execute_registry_clears_after_done(self, client, tmp_path):
+        """v2.0.5: 测试结束后 busy 必须消除(后台注册表为权威数据源)
+
+        用户报告: 任务完成后界面仍显示"容器正在执行测试"。
+        现在 /busy 的 busy 来自注册表(executing_here) + 进程探测,
+        任务结束注册表迁移出 running → busy 自动为 False。
+        """
+        c, ssh, tmp = client
+        self._deploy(c, tmp_path)
+        designer = {
+            "single_kv_cache": 198469, "dp": 4, "max_request_length": 131072,
+            "repeat_rate": 0.9, "request_rate": 0,
+            "cases": [{
+                "input_len": 8192, "output_len": 512,
+                "data_num_recommended": 216, "data_num_min": 108,
+                "concurrency_recommended": 91, "concurrency_max": 91,
+                "repeat_rate": 0.9, "dp": 4, "is_custom": False,
+            }],
+        }
+        r = c.post("/api/execute/start", json={
+            "designer": designer, "run_name": "busyreg",
+            "container": "aisbench_exec_box",
+        })
+        assert r.status_code == 200, r.text
+        status = wait_task(c, "execute", timeout=15)
+        assert status["status"] == "done", status
+
+        # docker top 已无测试进程(仅剩僵尸行, 应被过滤)
+        ssh.busy_containers.discard("aisbench_exec_box")
+        r = c.get("/api/containers/busy", params={"name": "aisbench_exec_box"})
+        data = r.json()
+        assert data["busy"] is False
+        assert data["executing_here"] is False
+        assert data["process_detected"] is False
+        assert data["task"]["status"] == "done"
+        assert data["task"]["script_running"] is False
+        assert data["task"]["ended_at"]
+
+        # 注册表已持久化到后台数据文件
+        exec_file = tmp / "exec_state.json"
+        assert exec_file.is_file()
+        import json as _json
+        saved = _json.loads(exec_file.read_text(encoding="utf-8"))
+        assert saved["aisbench_exec_box"]["status"] == "done"
+
+    def test_exec_registry_marks_interrupted_on_restart(self, tmp_path):
+        """服务重启时, 上次残留的 running 状态标记为 interrupted(不阻塞)"""
+        import json as _json
+        from app.logbus import LogBus
+        from app.state import AppState
+        from app.tasks import TaskManager
+
+        state = AppState(tmp_path)
+        (tmp_path / "exec_state.json").write_text(_json.dumps({
+            "aisbench_old": {
+                "status": "running", "phase": "执行测试脚本",
+                "run_id": "run_old", "started_at": "2026-10-01 00:00:00",
+                "script_running": True,
+            },
+        }), encoding="utf-8")
+        tm = TaskManager(LogBus(), state)
+        entry = tm.exec_state("aisbench_old")
+        assert entry["status"] == "interrupted"
+        assert entry["script_running"] is False
+        assert tm.is_executing("aisbench_old") is False
 
     def test_execute_requires_deploy(self, client):
         c, _, _ = client

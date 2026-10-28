@@ -47,6 +47,9 @@ class AppState:
         # 会话持久化文件: SSH凭据 + 部署信息, 服务重启后自动恢复
         # (注意: 凭据为明文保存, 仅适用于内网自用场景)
         self.session_file = self.data_dir / "session.json"
+        # 容器执行状态注册表持久化: name -> 执行状态(v2.0.5)
+        # 权威记录"哪个容器正在执行测试", 不依赖 docker top 猜测
+        self.exec_state_file = self.data_dir / "exec_state.json"
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
         self.results_dir.mkdir(parents=True, exist_ok=True)
 
@@ -105,6 +108,28 @@ class AppState:
                 self.session_file.unlink()
         except OSError:
             pass
+
+    # ------------------------------------------------------------ 执行状态注册表
+
+    def save_exec_state(self, entries: dict):
+        """持久化容器执行状态注册表(任务状态迁移时写入)"""
+        try:
+            self.exec_state_file.write_text(
+                json.dumps(entries, ensure_ascii=False, indent=2),
+                encoding="utf-8")
+        except OSError:
+            pass
+
+    def load_exec_state(self) -> dict:
+        """读取容器执行状态注册表, 损坏时按空处理"""
+        try:
+            if self.exec_state_file.is_file():
+                data = json.loads(self.exec_state_file.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
+        except (OSError, ValueError):
+            pass
+        return {}
 
     def restore_session(self):
         """服务启动时恢复上次会话: 后台自动重连SSH并恢复部署信息

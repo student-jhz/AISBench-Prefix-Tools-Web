@@ -131,6 +131,7 @@ Web 服务维护一个全局 SSH 连接（步骤 1 建立，全流程共用）�
 - `containers`：容器注册表 `name → inspect 信息`（选择/创建时登记，含镜像、挂载、运行状态等）。
 - `deploy_info` / `docker`：服务端"当前容器"（最近一次选择/创建的容器），供未显式携带容器名的兼容请求使用。
 - `tasks`：部署 / 清理任务全局各一个；**execute 任务按容器名分槽**（`_exec_tasks: 容器 → TaskRun`），不同容器可并发执行测试，同一容器互斥。
+- `exec_registry`（v2.0.5）：容器执行状态注册表 `name → {status, phase, run_id, script_running, started_at, ended_at}`，内存 + `data/exec_state.json` 持久化；任务启动写入 `running`，完成/失败/取消立即迁移出 `running`，服务重启时残留 `running` 标记为 `interrupted`。
 - `logtools_other_ssh`：日志工具"其他服务器"临时连接。
 
 多用户请求隔离：前端在 config / execute / status 等请求中**显式携带各自选择的容器名**，服务端经 `resolve_container(name)` / `docker_for_container(name)` 解析出该容器的挂载与路径信息；浏览器端当前容器选择存于各自 localStorage。
@@ -182,12 +183,18 @@ Web 服务维护一个全局 SSH 连接（步骤 1 建立，全流程共用）�
 
 ### 7.2 执行测试（对应桌面版 `_run_test_sequence`）
 
-1. 前端显式携带 `container` 发起执行，后端校验：容器 busy（`docker top` 检测到测试进程）或本服务已在该容器执行 → 拒绝；
+1. 前端显式携带 `container` 发起执行，后端校验：容器 busy（执行状态注册表 `running` 或 `docker top` 检测到测试进程）→ 拒绝；
 2. 容器内预检查 MODEL_PATH（存在且含 config.json）；
 3. 由前端提交的用例参数生成 run_tests.sh（随机种子、逐用例日志、失败计数）；
-4. `docker exec` 执行脚本，日志按 `exec@<容器名>` 通道实时推送（不同容器的执行日志互不混杂）；
+4. `docker exec` 执行脚本（执行状态注册表标记 `script_running=true`，脚本退出后置回 `false`），日志按 `exec@<容器名>` 通道实时推送（不同容器的执行日志互不混杂）；
 5. SFTP 下载 `test_logs_*/` 下全部日志与 `aisbench_all.log`、`aisbench_result.csv` 到服务端 `data/results/<run_id>/`；
 6. 解析日志生成 `results_*.csv` 与结果摘要表，前端展示并支持下载。
+
+**容器执行状态检测（v2.0.5，busy 判定原理）**：
+
+- **执行状态注册表（权威）**：任务启动即在服务端后台数据写入（内存 + `data/exec_state.json`），记录 `status/phase/run_id/script_running` 等字段；任务线程无论正常完成、失败还是取消，`finally` 中都把状态迁移出 `running`。前端 `/api/containers/busy` 的 `executing_here` 即来源于此，因此**测试任务结束后 busy 必然自动消除**（前端 busy 期间每 5 秒轮询）。
+- **docker top 进程探测（辅助）**：`docker top <容器> -o pid,cmd` 按 `run_tests.sh / aisbench_test.py` 特征匹配进程，可发现**其他用户或手工 docker exec 启动**的测试（注册表覆盖不到的场景）；已过滤 defunct 僵尸进程，避免测试结束后残留僵尸导致"永远 busy"。
+- 两者合并为 `busy` 并附带 `busy_source`（registry/process/both）标明来源；`script_running=false` 且任务仍在收尾（下载/解析日志）时，界面按"收尾中"展示而非"测试执行中"。
 
 ### 7.3 实时日志
 

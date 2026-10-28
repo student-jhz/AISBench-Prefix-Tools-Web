@@ -1,6 +1,6 @@
 /** 远程日志工具 - KV cache 筛选 / 日志查看 */
 
-import { $, $$, el, fmtBytes, setMsg, toast, modal, copyText } from "./util.js";
+import { $, $$, bindPasswordToggle, el, fmtBytes, setMsg, toast, modal, copyText } from "./util.js";
 import { api } from "./api.js";
 
 
@@ -10,6 +10,9 @@ let lastParsed = null;
 
 
 export function initLogtools() {
+  // 其他服务器密码显示/隐藏(v2.0.5: 与步骤 1 一致的可感知切换)
+  bindPasswordToggle($("#ltPassword"), $("#ltPwToggle"));
+
   // 服务器切换
   $$radio("ltServer", value => {
     $("#ltOtherServerBox").hidden = value !== "other";

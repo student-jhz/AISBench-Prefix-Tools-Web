@@ -27,17 +27,25 @@ def _docker(state: AppState) -> DockerManager:
 
 @router.get("/list")
 def list_containers(state: AppState = Depends(get_state)):
-    """列出执行机上的 aisbench 容器(含运行状态与测试执行状态)"""
+    """列出执行机上的 aisbench 容器(含运行状态与测试执行状态)
+
+    busy 同样拆分两来源: 注册表(本服务任务) + docker top 进程探测(他人)。
+    """
     docker = _docker(state)
     items = docker.list_containers()
     for item in items:
+        executing_here = (state.tasks.is_executing(item["name"])
+                          if state.tasks else False)
         if item["running"]:
-            busy, detail = docker.container_busy(item["name"])
-            item["busy"] = busy
+            detected, detail = docker.container_busy(item["name"])
+            item["busy"] = detected or executing_here
             item["busy_detail"] = detail
         else:
             item["busy"] = False
             item["busy_detail"] = ""
+        item["executing_here"] = executing_here
+        item["process_detected"] = bool(
+            item.get("busy") and not executing_here)
     # 正在运行的排前面, 同状态按名称排序
     items.sort(key=lambda x: (not x["running"], x["name"]))
     return {"containers": items}
@@ -68,13 +76,17 @@ def select_container(req: ContainerSelectRequest,
     if not info:
         raise HTTPException(400, f"容器不存在或无法读取信息: {name}")
 
-    busy, busy_detail = (docker.container_busy(name)
-                         if info.get("running") else (False, ""))
+    process_detected, busy_detail = (docker.container_busy(name)
+                                     if info.get("running") else (False, ""))
+    executing_here = state.tasks.is_executing(name) if state.tasks else False
+    busy = process_detected or executing_here
     if busy and not req.force:
         return {
             "selected": False,
             "busy": True,
             "busy_detail": busy_detail,
+            "executing_here": executing_here,
+            "process_detected": process_detected,
             "info": info,
             "message": (
                 f"容器 {name} 正在执行测试, 不建议选择。"
@@ -86,6 +98,12 @@ def select_container(req: ContainerSelectRequest,
         "selected": True,
         "busy": busy,
         "busy_detail": busy_detail,
+        "executing_here": executing_here,
+        "process_detected": process_detected,
+        "busy_source": ("both" if executing_here and process_detected
+                        else "registry" if executing_here
+                        else "process" if process_detected else ""),
+        "task": (state.tasks.exec_state(name) if state.tasks else {}),
         "info": info,
         "deploy": state.deploy_info.to_dict(),
     }
@@ -109,7 +127,15 @@ def start_container(req: ContainerNameRequest,
 
 @router.get("/busy")
 def container_busy(name: str, state: AppState = Depends(get_state)):
-    """查询容器是否正在执行测试(选择容器/执行测试前的实时感知)"""
+    """查询容器是否正在执行测试(选择容器/执行测试前的实时感知)
+
+    v2.0.5 起状态来源拆分为两级, 前端据此给出准确展示:
+    - executing_here: 后台执行状态注册表(权威, data/exec_state.json 持久化),
+      本服务在该容器上的任务是否 running(含实时 phase / run_id);
+    - process_detected: docker top 进程探测(辅助), 可发现其他用户或
+      手工 docker exec 启动的测试(僵尸进程已过滤);
+    - busy = executing_here or process_detected, busy_source 标明来源。
+    """
     docker = _docker(state)
     name = (name or "").strip()
     if not name:
@@ -118,16 +144,33 @@ def container_busy(name: str, state: AppState = Depends(get_state)):
         raise HTTPException(400, f"容器不存在: {name}")
     info = docker.inspect_container(name) or {}
     running = bool(info.get("running"))
-    busy, detail = (docker.container_busy(name) if running else (False, ""))
+    process_detected, detail = (docker.container_busy(name)
+                                if running else (False, ""))
     executing_here = state.tasks.is_executing(name) if state.tasks else False
+    task = (state.tasks.exec_state(name)
+            if state.tasks else {})
+    busy = executing_here or process_detected
+    if executing_here and process_detected:
+        busy_source = "both"
+    elif executing_here:
+        busy_source = "registry"
+    elif process_detected:
+        busy_source = "process"
+    else:
+        busy_source = ""
     return {
         "name": name,
         "running": running,
         "state": info.get("state", "unknown"),
         "image": info.get("image", ""),
-        "busy": busy or executing_here,
-        "busy_detail": detail,
+        "busy": busy,
+        "busy_source": busy_source,
+        # 本服务注册表: 权威(任务线程是否仍在运行)
         "executing_here": executing_here,
+        # docker top 探测: 辅助(可发现他人/手工启动的测试)
+        "process_detected": process_detected,
+        "busy_detail": detail,
+        "task": task,
     }
 
 
