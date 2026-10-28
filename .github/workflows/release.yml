@@ -84,7 +84,10 @@ jobs:
           grep -q 'id="bootError"' index.html
           JS=$(grep -oE 'src="/static/js/main\.js\?v=[^"]+"' index.html | head -1 | sed 's/src="//;s/"$//')
           curl -fsS "http://127.0.0.1:8320${JS}" -o main.js
-          grep -qE 'import.*step[0-9]\.js' main.js
+          # v3.0 前端是任务平台入口, 登录/任务列表/新建任务是核心页面模块
+          grep -q 'from "./login.js"' main.js
+          grep -q 'from "./tasks.js"' main.js
+          grep -q 'from "./newtask.js"' main.js
           for M in $(grep -oE 'from "\./[a-z0-9]+\.js"' main.js | sed 's/from "\.\///;s/"//'); do
             curl -fsS "http://127.0.0.1:8320/static/js/${M}" -o mod.js
             cp mod.js /tmp/smoke_mod.mjs
