@@ -68,6 +68,10 @@ class AppState:
 
         # 任务管理器在 tasks.py 中初始化(避免循环导入)
         self.tasks = None  # type: ignore[assignment]
+        # v3.0 平台层: 会话注册表 / 任务存储 / 任务调度器(main.py 中初始化)
+        self.sessions = None  # type: ignore[assignment]
+        self.platform_tasks = None  # type: ignore[assignment]
+        self.scheduler = None  # type: ignore[assignment]
 
     # ------------------------------------------------------------ SSH
 

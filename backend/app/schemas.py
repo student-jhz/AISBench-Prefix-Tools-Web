@@ -16,6 +16,26 @@ class SSHConnectRequest(BaseModel):
     timeout: int = Field(default=10, ge=1, le=120)
 
 
+# ------------------------------------------------------------ 平台 v3.0(登录 / 任务)
+
+class PlatformLoginRequest(BaseModel):
+    """登录执行机(建立该用户的 SSH 会话)"""
+    host: str = Field(min_length=1)
+    port: int = Field(default=22, ge=1, le=65535)
+    username: str = Field(min_length=1)
+    password: Optional[str] = None
+    key_upload_id: Optional[str] = None
+    timeout: int = Field(default=10, ge=1, le=120)
+
+
+class PlatformTaskCreateRequest(BaseModel):
+    """提交测试任务: 镜像 + 测试配置 + 测试用例(容器由平台自动管理, 不对外暴露)"""
+    name: Optional[str] = None
+    image: str = Field(min_length=1)
+    config: Dict[str, str]
+    designer: Dict
+
+
 # ------------------------------------------------------------ 容器 / 部署(创建容器)
 
 class ContainerSelectRequest(BaseModel):

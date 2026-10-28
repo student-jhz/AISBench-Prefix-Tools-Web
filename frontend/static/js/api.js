@@ -1,5 +1,19 @@
 /** API 客户端 */
 
+/** 平台会话 token(登录后签发; 401 时前端退回登录界面) */
+export const auth = {
+  getToken() {
+    try { return localStorage.getItem("aisbench_token") || ""; }
+ catch { return ""; }
+  },
+  setToken(token) {
+    try {
+      if (token) localStorage.setItem("aisbench_token", token);
+      else localStorage.removeItem("aisbench_token");
+    } catch { /* ignore */ }
+  },
+};
+
 /** 常规 JSON 请求超时(毫秒): 防止后端/SSH 阻塞时请求永远 pending,
  *  页面状态卡死 —— 超时后抛出可感知的错误并允许重试。 */
 const REQUEST_TIMEOUT_MS = 30000;
@@ -13,6 +27,9 @@ class ApiError extends Error {
 
 async function request(method, url, body = null, options = {}) {
   const init = { method, headers: {} };
+  // 平台 API 鉴权: 携带登录会话 token
+  const token = auth.getToken();
+  if (token) init.headers["Authorization"] = `Bearer ${token}`;
   if (body instanceof FormData) {
     init.body = body;
   } else if (body !== null) {
@@ -38,6 +55,10 @@ async function request(method, url, body = null, options = {}) {
   try { data = await resp.json(); } catch { /* ignore */ }
   if (!resp.ok) {
     const message = data?.detail || `请求失败 (${resp.status})`;
+    // 会话失效: 通知全局退出到登录界面(登录接口本身不触发)
+    if (resp.status === 401 && !url.startsWith("/api/auth/login")) {
+      window.dispatchEvent(new CustomEvent("aisbench:unauthorized"));
+    }
     if (!options.silent) console.warn(`${method} ${url}:`, message);
     throw new ApiError(message, resp.status);
   }

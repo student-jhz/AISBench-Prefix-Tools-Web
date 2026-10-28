@@ -12,10 +12,14 @@ from fastapi.staticfiles import StaticFiles
 
 from .logbus import LogBus
 from .paths import bundle_dir, is_frozen
+from .platform.scheduler import TaskScheduler
+from .platform.sessions import SessionRegistry
+from .platform.tasks import TaskStore
 from .state import AppState
 from .tasks import TaskManager
 from .version import APP_NAME, __version__
 from .routers import (
+    auth,
     compare,
     config,
     containers,
@@ -24,6 +28,7 @@ from .routers import (
     execute,
     files,
     logtools,
+    platform,
     results,
     ssh,
     system,
@@ -54,6 +59,16 @@ def create_app(ssh_manager=None, data_dir=None, ssh_factory=None) -> FastAPI:
                      ssh_factory=ssh_factory)
     bus = LogBus()
     state.tasks = TaskManager(bus, state)
+
+    # v3.0 平台层: 登录会话 + 任务队列调度(容器对用户隐藏)
+    state.sessions = SessionRegistry(state)
+    state.platform_tasks = TaskStore(state.data_dir / "platform")
+    core_code = bundle_dir() / "backend" / "core_code" / "aisbench_auto_tools_prefix"
+    state.scheduler = TaskScheduler(
+        bus, state.platform_tasks, state.sessions,
+        state.results_dir, core_code)
+    state.scheduler.start()
+
     # 恢复上次会话: 后台自动重连SSH并恢复部署信息(如有)
     state.restore_session()
     app.state.app_state = state
@@ -78,6 +93,8 @@ def create_app(ssh_manager=None, data_dir=None, ssh_factory=None) -> FastAPI:
     app.include_router(results.router, prefix="/api")
     app.include_router(logtools.router, prefix="/api")
     app.include_router(compare.router, prefix="/api")
+    app.include_router(auth.router, prefix="/api")
+    app.include_router(platform.router, prefix="/api")
 
     # WebSocket: 实时日志
     @app.websocket("/ws/logs")

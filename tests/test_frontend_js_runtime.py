@@ -15,7 +15,7 @@ RUNTIME_SCRIPTS = [
     "test_bootwatchdog.mjs",
     "test_logconsole.mjs",
     "test_password_toggle.mjs",
-    "test_busy_flow.mjs",
+    "test_platform_flow.mjs",
 ]
 
 

@@ -261,9 +261,15 @@ class FakeSSH:
             return (0, out) if capture else 0
 
         if "run_tests.sh" in command:
-            # 模拟测试脚本执行: 生成日志文件
-            m = re.search(r"-v (\S+) ", command)
-            workdir = "/tmp/AISBench_Prefix_Tools/aisbench_auto_tools_prefix-main"
+            # 模拟测试脚本执行: 生成日志文件(路径取自该容器实际代码挂载,
+            # 与真实 docker 行为一致 —— v3.0 平台任务用独立工作目录)
+            m = re.search(r"docker exec -w \S+ (\S+) bash", command)
+            cname = m.group(1) if m else ""
+            binds = self.container_meta.get(cname, {}).get("binds", [])
+            workdir = next(
+                (b.split(":")[0] for b in binds
+                 if "aisbench_auto_tools_prefix" in b),
+                "/tmp/AISBench_Prefix_Tools/aisbench_auto_tools_prefix-main")
             log_dir = f"{workdir}/test_logs_20261020_101010"
             self.files[f"{log_dir}/test_1_8192_512.log"] = SAMPLE_TEST_LOG
             self.files[f"{workdir}/aisbench_all.log"] = "aisbench all log"

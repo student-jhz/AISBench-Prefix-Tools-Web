@@ -20,8 +20,10 @@ check("main.js 顶层设置 __appBooted",
   /window\.__appBooted\s*=\s*true/.test(mainSrc));
 const initIdx = mainSrc.lastIndexOf("async function init()");
 const initSrc = mainSrc.slice(initIdx);
-check("init 先渲染后等状态",
-  initSrc.indexOf('showView("step1")') < initSrc.indexOf("await refreshState()"));
+check("v3.0 init: 登录态检查前先注册登录门禁", 
+  initSrc.indexOf("initLogin()") < initSrc.indexOf("auth.getToken()"));
+check("v3.0 init: 未登录走 showLogin", 
+  initSrc.includes("showLogin()"));
 
 // 在 DOM 桩中执行自检脚本
 function makeEnv({ booted = false, active = false } = {}) {

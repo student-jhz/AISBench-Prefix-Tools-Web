@@ -96,7 +96,8 @@ class TestSystem:
     def test_static_assets_served(self, client):
         c, _, _ = client
         for path in ("/static/js/main.js", "/static/css/app.css",
-                     "/static/js/step2.js"):
+                     "/static/js/tasks.js", "/static/js/newtask.js",
+                     "/static/js/login.js"):
             r = c.get(path)
             assert r.status_code == 200, path
 

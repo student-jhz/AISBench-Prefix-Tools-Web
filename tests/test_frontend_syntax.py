@@ -46,16 +46,15 @@ def test_no_raw_newline_in_string_literals():
     """
 
 
-def test_step2_join_uses_escape_not_raw_newline():
-    """回归断言: v2.0.1~2.0.3 事故点 join("\\n") 必须是转义序列
+def test_no_bare_backslash_t_join():
+    """回归断言: 旧 v2.0.1~2.0.3 事故模式 join("\\t") 不得再现
+    (v3.0: step2.js 已被平台视图取代, 断言改为面向全部前端 JS)
 
     (通用语法由上面的模块解析测试守卫; 此处针对事故现场再加一道
     精确断言, 不依赖 node。)
     """
-    data = (JS_DIR / "step2.js").read_bytes()
-    i = data.find(b"mounts")
-    j = data.find(b".join(", i)
-    assert j >= 0, "mounts join 代码块缺失?"
-    seg = data[j:j + 20]
-    assert b'.join("\\n")' in seg, (
-        f"join 分隔符必须是转义序列 \\n(两个字符), 实际字节: {seg!r}")
+    for js in JS_DIR.glob("*.js"):
+        data = js.read_bytes()
+        # 字符串内 join("\t") 的原始 tab 转义事故特征: b'.join("\t")'
+        assert b'.join("\t")' not in data, (
+            f"{js.name}: join 分隔符出现原始转义序列, 存在 v2.0.1 事故风险")
