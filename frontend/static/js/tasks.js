@@ -108,6 +108,10 @@ function rowActions(t) {
     class: "btn btn-ghost btn-sm", title: "查看详情",
     onclick: () => showTaskDetail(t.id),
   }, "👁"));
+  box.append(el("button", {
+    class: "btn btn-ghost btn-sm", title: "复制此任务的配置新建任务",
+    onclick: () => copyTask(t.id),
+  }, "⧉ 复制"));
   if (ACTIVE_STATUSES.has(t.status)) {
     box.append(el("button", {
       class: "btn btn-outline btn-sm", title: "取消任务",
@@ -131,6 +135,20 @@ async function cancelTask(id) {
     toast("已发送取消请求", "info");
     refreshTasks();
   } catch (err) { toast(err.message, "error"); }
+}
+
+/** 复制历史任务 → 基于它回填"新建任务"表单 */
+async function copyTask(id) {
+  try {
+    const src = await api.get(
+      `/api/platform/tasks/${encodeURIComponent(id)}/copy-source`);
+    // 同步前缀立即回填名称/镜像/配置, 再切换视图避免用户看到空表单
+    const filling = window.prefillNewTask?.(src);
+    showView("newtask");
+    await filling;
+  } catch (err) {
+    toast(`复制任务失败: ${err.message}`, "error", 6000);
+  }
 }
 
 async function deleteTask(t) {
@@ -208,6 +226,9 @@ function renderDetailStatus(t) {
 function renderDetailActions(t) {
   const box = $("#taskDetailActions");
   box.innerHTML = "";
+  box.append(el("button", {
+    class: "btn btn-outline", onclick: () => copyTask(t.id),
+  }, "⧉ 复制为新任务"));
   if (ACTIVE_STATUSES.has(t.status)) {
     box.append(el("button", {
       class: "btn btn-outline", onclick: () => cancelTask(t.id),

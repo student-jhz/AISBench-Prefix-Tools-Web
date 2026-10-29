@@ -278,6 +278,8 @@ docker compose up -d --build
 | 前端 | `node tests/test_logconsole.mjs`：LogConsole 对 PTY `\r\n`、跨 chunk 分片、孤立 `\r` 进度条、普通 `\n` 等场景的渲染正确性 |
 | 前端 | `node tests/test_bootwatchdog.mjs`：启动自检对已启动/首屏渲染/模块失败/慢启动恢复/脚本 404/非脚本资源错误等场景的判定正确性 |
 | 前端 | `node tests/test_newtask_chips.mjs` / `test_newtask_presets_retry.mjs`：新建任务页输入/输出长度选择栏在有历史设计时必须随预设到达而渲染（v3.0.1 曾因"历史设计提前 return"导致选择栏空白），预设加载失败需可见提示并支持再次进入视图自动重试 |
+| 前端 | `node tests/test_copy_task.mjs`：复制历史任务全流程 —— 列表「复制」按钮 → copy-source 接口 → 表单回填（名称/镜像/配置/长度选择栏/用例）→ 提交体携带完整配置 |
+| API 集成 | `tests/test_platform.py` copy-source 用例：返回用户提交内容（镜像/配置/用例/勾选长度）且不暴露 container/token/work_dir；早期任务未存勾选长度时从用例反推 |
 | HTML 结构 | `tests/test_html_structure.py`：index.html 标签严格配平、登录区必须是 body 直接子元素、顶栏只允许出现在 #appShell 内、登录 CSS 保持全屏 flex 居中（v3.0.0 曾因未闭合 header 导致登录卡片钉在左上角） |
 | 冒烟 | 应用启动、静态页面、WebSocket 握手 |
 

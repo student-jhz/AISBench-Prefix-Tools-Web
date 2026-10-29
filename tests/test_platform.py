@@ -181,6 +181,64 @@ class TestTaskFlow:
         r = c.post("/api/platform/tasks", json=body, headers=headers)
         assert r.status_code == 400
 
+    def test_copy_source_returns_user_payload_only(self, pclient):
+        """复制源: 返回镜像/配置/用例设计; 内部执行信息(container 等)不暴露"""
+        c, ssh, _ = pclient
+        headers, _ = login(c)
+        ssh.images.add("aisbench:v1")
+        # 新格式: 提交时一并持久化勾选的输入/输出长度
+        body = dict(TASK_BODY)
+        body["designer"] = dict(DESIGNER_PAYLOAD,
+                                input_lengths=[8192, 16384],
+                                output_lengths=[512, 1024])
+        r = c.post("/api/platform/tasks", json=body, headers=headers)
+        task_id = r.json()["id"]
+        wait_task(c, task_id, headers)
+
+        r = c.get(f"/api/platform/tasks/{task_id}/copy-source", headers=headers)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["id"] == task_id
+        assert data["name"] == TASK_BODY["name"]
+        assert data["image"] == "aisbench:v1"
+        assert data["config"] == TASK_BODY["config"]
+        assert data["designer"]["single_kv_cache"] == 198469
+        assert data["designer"]["cases"] == DESIGNER_PAYLOAD["cases"]
+        # 已持久化的勾选长度原样返回(复制后选择栏精确回显)
+        assert data["designer"]["input_lengths"] == [8192, 16384]
+        assert data["designer"]["output_lengths"] == [512, 1024]
+        # 容器概念仍不暴露
+        for hidden in ("container", "token", "work_dir"):
+            assert hidden not in data
+            assert hidden not in data["designer"]
+
+    def test_copy_source_derives_lengths_for_legacy_tasks(self, pclient):
+        """早期任务未持久化勾选长度 → 从用例反推, 保证选择栏可回显"""
+        c, ssh, _ = pclient
+        headers, _ = login(c)
+        ssh.images.add("aisbench:v1")
+        r = c.post("/api/platform/tasks", json=TASK_BODY, headers=headers)
+        task_id = r.json()["id"]
+        wait_task(c, task_id, headers)
+
+        r = c.get(f"/api/platform/tasks/{task_id}/copy-source", headers=headers)
+        assert r.status_code == 200, r.text
+        designer = r.json()["designer"]
+        assert designer["input_lengths"] == [8192]
+        assert designer["output_lengths"] == [512]
+
+    def test_copy_source_requires_auth(self, pclient):
+        c, _, _ = pclient
+        r = c.get("/api/platform/tasks/t0000000000000000ff/copy-source")
+        assert r.status_code == 401
+
+    def test_copy_source_not_found(self, pclient):
+        c, _, _ = pclient
+        headers, _ = login(c)
+        r = c.get("/api/platform/tasks/t0000000000000000ff/copy-source",
+                  headers=headers)
+        assert r.status_code == 404
+
     def test_delete_finished_task(self, pclient):
         c, ssh, tmp = pclient
         headers, _ = login(c)

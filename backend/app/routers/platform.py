@@ -82,6 +82,38 @@ def task_detail(task_id: str, state: AppState = Depends(get_state),
     return task.public(detail=True)
 
 
+@router.get("/tasks/{task_id}/copy-source")
+def task_copy_source(task_id: str, state: AppState = Depends(get_state),
+                     session: UserSession = Depends(require_session)):
+    """复制历史任务: 返回基于它新建任务所需的用户提交内容
+
+    - 只返回镜像/测试配置/用例设计 —— 内部执行信息(container/token/work_dir)
+      仍然不暴露, 与"容器对用户不可见"的平台理念一致;
+    - 早期任务 designer 中未持久化勾选长度时, 从用例反推输入/输出长度,
+      保证前端复制后长度选择栏能正确回显。
+    """
+    task = state.platform_tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, "任务不存在")
+    designer = dict(task.designer or {})
+    cases = designer.get("cases") or []
+    if cases and not designer.get("input_lengths"):
+        designer["input_lengths"] = sorted(
+            {int(c["input_len"]) for c in cases
+             if c.get("input_len") is not None})
+    if cases and not designer.get("output_lengths"):
+        designer["output_lengths"] = sorted(
+            {int(c["output_len"]) for c in cases
+             if c.get("output_len") is not None})
+    return {
+        "id": task.id,
+        "name": task.name,
+        "image": task.image,
+        "config": task.config or {},
+        "designer": designer,
+    }
+
+
 @router.post("/tasks/{task_id}/cancel")
 def cancel_task(task_id: str, state: AppState = Depends(get_state),
                 session: UserSession = Depends(require_session)):

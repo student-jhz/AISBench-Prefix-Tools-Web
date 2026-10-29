@@ -31,6 +31,8 @@ export function initNewTask() {
     loadImagesOnce();
     if (!presetsPromise) loadPresets();
   };
+  // 供任务列表/详情页"复制为新任务"调用(基于历史任务回填表单)
+  window.prefillNewTask = fillFromTask;
 }
 
 function loadImagesOnce() {
@@ -133,6 +135,20 @@ function collectConfig() {
     if (v) config[k] = v;
   }
   return config;
+}
+
+/** 将历史任务的测试配置回填到表单 */
+function applyConfig(config) {
+  const fields = {
+    model_name: "#cfgModelName", model_path: "#cfgModelPath",
+    host_ip: "#cfgHostIp", host_port: "#cfgHostPort",
+    api_key: "#cfgApiKey", default_perf: "#cfgDefaultPerf",
+    output_dir: "#cfgOutputDir", pod_info: "#cfgPodInfo",
+    work_path: "#cfgWorkPath", dataset_path: "#cfgDatasetPath",
+  };
+  for (const [key, sel] of Object.entries(fields)) {
+    $(sel).value = config[key] ?? "";
+  }
 }
 
 function validateConfigLocal(config) {
@@ -292,6 +308,46 @@ async function restoreDesigner(presetsReady, message = "已恢复上次设计的
     renderCases();
     $("#calcDetails").textContent = data.calc_details;
   } catch { /* ignore */ }
+}
+
+/** 基于历史任务回填"新建任务"表单(任务列表/详情页的"复制"入口) */
+export async function fillFromTask(src) {
+  if (!src || typeof src !== "object") return;
+  // 任务名: 历史名 + 副本后缀, 用户可自行修改
+  $("#taskNameInput").value = src.name ? `${src.name} 副本` : "";
+  // 镜像: 优先匹配当前镜像列表; 不在列表中时保留历史镜像名(提交时仍使用它)
+  if (src.image) {
+    const found = imagesCache.find(i => i.name === src.image);
+    selectedImage = found || { name: src.image };
+    renderImages();
+    if (imagesLoaded && !found) {
+      setMsg("#imageSelectMsg",
+        `⚠ 历史任务镜像 ${src.image} 不在当前镜像列表中, 提交时仍将使用该镜像`,
+        "warn");
+    }
+  }
+  // 测试配置回填
+  applyConfig(src.config || {});
+  // 用例设计回填(等长度预设就绪后渲染选择栏)
+  const d = src.designer || {};
+  G.designer = {
+    params: {
+      single_kv_cache: Number(d.single_kv_cache) || 0,
+      dp: Number(d.dp) || 1,
+      max_request_length: Number(d.max_request_length) || 0,
+      repeat_rate: Number(d.repeat_rate) || 0.9,
+      request_rate: Number(d.request_rate) || 0,
+    },
+    cases: Array.isArray(d.cases) ? d.cases : [],
+    summary: d.summary || "",
+    input_lengths: Array.isArray(d.input_lengths) ? d.input_lengths : [],
+    output_lengths: Array.isArray(d.output_lengths) ? d.output_lengths : [],
+  };
+  saveDesigner();
+  const presetsReady = presetsPromise || loadPresets();
+  await restoreDesigner(presetsReady, "已载入历史任务的测试用例");
+  setMsg("#submitMsg",
+    `已从任务 ${src.name || src.id} 复制配置, 请确认后提交新任务`, "ok");
 }
 
 function renderLengthChips() {
@@ -574,6 +630,9 @@ async function submitTask() {
       config,
       designer: {
         ...G.designer.params,
+        // 勾选的长度一并持久化: 复制任务时可精确回显选择栏
+        input_lengths: checkedValues("#inputLengthChecks", checkedInputs),
+        output_lengths: checkedValues("#outputLengthChecks", checkedOutputs),
         cases: G.designer.cases,
       },
     });
