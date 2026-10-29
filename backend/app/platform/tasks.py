@@ -186,6 +186,15 @@ class TaskStore:
         return task
 
     def save(self, task: PlatformTask):
+        """保存任务(与 get()/list() 互斥)。
+
+        旧实现直接对 task.json 截断重写, 而并发 get()/list() 不持锁 ——
+        状态轮询恰好撞上写入窗口时会读到空/半截 JSON, 解析失败返回
+        None, 前端表现为任务详情偶发 404"任务不存在"(测试中为 flake,
+        生产上任务执行期间高频保存状态, 同样可能命中)。
+        读写共用一把锁即可消除窗口; 不用临时文件+replace 的原因:
+        Windows 上目标文件正被读取时替换会触发共享冲突。
+        """
         with self._lock:
             d = self.dir / task.id
             d.mkdir(parents=True, exist_ok=True)
@@ -194,17 +203,19 @@ class TaskStore:
                 encoding="utf-8")
 
     def get(self, task_id: str) -> Optional[PlatformTask]:
+        """读取任务(与 save() 互斥, 不读到写入中的半截文件)"""
         task_id = (task_id or "").strip()
         if not re.fullmatch(r"t[0-9a-f]+", task_id):
             return None
-        f = self.dir / task_id / "task.json"
-        if not f.is_file():
-            return None
-        try:
-            return PlatformTask.from_record(
-                json.loads(f.read_text(encoding="utf-8")))
-        except (OSError, ValueError, KeyError):
-            return None
+        with self._lock:
+            f = self.dir / task_id / "task.json"
+            if not f.is_file():
+                return None
+            try:
+                return PlatformTask.from_record(
+                    json.loads(f.read_text(encoding="utf-8")))
+            except (OSError, ValueError, KeyError):
+                return None
 
     def list(self) -> List[PlatformTask]:
         """全部任务(按创建时间倒序) —— 平台共享视角: 每个用户都能看到机器上的任务"""

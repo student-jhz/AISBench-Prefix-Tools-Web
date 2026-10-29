@@ -9,6 +9,7 @@
 """
 
 import time
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
@@ -326,3 +327,42 @@ class TestStartupRecovery:
         tasks = store.list()
         assert tasks[0].status == "interrupted"
         assert "中断" in tasks[0].error
+
+
+class TestTaskStoreAtomicity:
+    def test_concurrent_get_never_sees_partial_file(self, tmp_path):
+        """保存与并发读取竞争: get() 不能读到空/半截 JSON(v3.0.2 偶发
+        任务详情 404"任务不存在"的根因, 测试套件中以 flake 形式暴露)。
+
+        旧实现 write_text 截断重写, 读侧无锁 —— 命中写入窗口时
+        json.loads 抛 ValueError, get() 返回 None, API 404。
+        """
+        store = TaskStore(tmp_path / "platform")
+        task = store.create(name="race", owner="root", image="i:1",
+                            status="running")
+
+        stop = threading.Event()
+        seen_404_style = []
+
+        def reader():
+            while not stop.is_set():
+                t = store.get(task.id)
+                if t is None:
+                    seen_404_style.append(time.time())
+
+        threads = [threading.Thread(target=reader) for _ in range(4)]
+        for t in threads:
+            t.start()
+        try:
+            for i in range(200):
+                task.phase = f"phase-{i}"
+                store.save(task)
+        finally:
+            stop.set()
+            for t in threads:
+                t.join()
+
+        assert not seen_404_style, (
+            f"并发读取观察到 {len(seen_404_style)} 次任务丢失(旧写入非原子)")
+        # 最终状态完好
+        assert store.get(task.id).phase == "phase-199"
