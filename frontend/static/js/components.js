@@ -37,9 +37,40 @@ export class LogConsole {
 
     // 按 \n 分段; 段内单独的 \r 表示回到行首(保留最后一段, 进度条场景)
     const segments = s.split("\n");
+    let collapsedInThisAppend = false;
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i];
-      if (i > 0) this.lines.push("");
+      const frame = seg.includes("\r") ? seg.split("\r").pop() : seg;
+
+      // 进度帧以 \n 结尾时(部分远端/PTY 会把进度帧按行输出), 与上一条
+      // 进度行同属一条进度条的同一次刷新 → 原地替换而非新增行, 避免一条
+      // 进度条刷出成百上千行日志。参照行有两种位置:
+      //   i>0             → 上一段刚完成的行;
+      //   i=0 且末尾为空行 → 上一次 append 以 \n 结束留下的空行,
+      //                       本段是新帧内容, 参照其上一行。
+      let ref = null, target = -1;
+      if (i > 0) {
+        ref = this.lines[this.lines.length - 1] || null;
+        target = this.lines.length - 1;
+      } else if (this.lines.length >= 2 && this.lines[this.lines.length - 1] === "") {
+        ref = this.lines[this.lines.length - 2] || null;
+        target = this.lines.length - 2;
+      }
+      if (ref && this._isProgressRefresh(frame, ref)) {
+        this.lines[target] = frame;
+        collapsedInThisAppend = true;
+        continue;
+      }
+
+      if (i > 0) {
+        // 刚发生过折叠时, 末尾的待写行(空行)已存在, 不能再压入一个
+        // 空行 —— 否则每个进度帧都多一个空行, 链式参照被打断。
+        if (collapsedInThisAppend) {
+          collapsedInThisAppend = false;
+        } else {
+          this.lines.push("");
+        }
+      }
       if (!seg) continue;
       if (this.lines.length === 0) this.lines.push("");
       if (seg.includes("\r")) {
@@ -53,6 +84,15 @@ export class LogConsole {
       this.lines = this.lines.slice(-this.maxLines);
     }
     this.render();
+  }
+
+  /** frame 是否为参照行的进度条刷新帧(同骨架 + 同总量 + 数值有变化) */
+  _isProgressRefresh(frame, ref) {
+    if (!frame || !ref) return false;
+    if (frame === ref) return false;  // 完全相同 → 真实重复日志, 不折叠
+    if (!isProgressLine(ref) || !isProgressLine(frame)) return false;
+    return progressSkeleton(ref) === progressSkeleton(frame)
+      && progressTotal(ref) === progressTotal(frame);
   }
 
   /** 一次性载入服务端历史快照: 整段解析后单次渲染, 并直接定位到最新
@@ -79,6 +119,33 @@ export class LogConsole {
     this.pending = "";
     this.render();
   }
+}
+
+/** 进度帧特征: 百分比 / n/m 计数 / tqdm 计时区间 / 速率 */
+const PROGRESS_LINE_RE =
+  /\d\s*%|\[\d+:\d+<|\d+(?:\.\d+)?\s*(?:it\/s|s\/it|B\/s|kB\/s|MB\/s)\b|\b\d+\s*\/\s*\d+\b/;
+
+function isProgressLine(line) {
+  return PROGRESS_LINE_RE.test(line);
+}
+
+/** 进度条骨架: 去掉计时区间/进度块/数字/连续空白后比较
+ * ("  0%|██    | 0/108 [..]" 与 " 75%|██████ | 81/108 [..]" 骨架相同) */
+function progressSkeleton(line) {
+  return line
+    .replace(/\[[^\]]*\]/g, "[]")
+    // 进度块/竖线/空白统一折叠: 空条 "0%|    |" 与满条 "100%|████|"
+    // 是同一条进度条的不同填充状态, 骨架必须相同
+    // \u2580-\u259F: 全部 Unicode 块元素(进度块); 与竖线/空白一起折叠
+    .replace(/[|\u2580-\u259F=\s]+/g, " ")
+    .replace(/\d+(?:\.\d+)?/g, "#")
+    .trim();
+}
+
+/** 进度总量(最后一个 n/m 的 m): 不同总量的进度条不能互相覆盖 */
+function progressTotal(line) {
+  const pairs = [...line.matchAll(/\b\d+\s*\/\s*(\d+)\b/g)];
+  return pairs.length ? Number(pairs[pairs.length - 1][1]) : null;
 }
 
 

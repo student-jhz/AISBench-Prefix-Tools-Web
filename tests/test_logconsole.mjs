@@ -86,4 +86,63 @@ function check(name, cond) {
     again.split("[1/6]").length === 2 && again.includes("✓ 任务完成"));
 }
 
+// 场景6: 进度帧以 \n 结尾(远端按行输出进度) —— 同一条进度条的
+// 连续刷新帧应原地折叠为一行, 而不是刷出成百上千行日志
+{
+  const { pre, c } = makeConsole();
+  c.append("2026-10-29 10:00:00 - INFO - test start\n");
+  c.append("  0%|          | 0/108 [00:00<?, ?it/s]\n");
+  c.append(" 25%|██▌       | 27/108 [00:05<00:15, 5.4it/s]\n");
+  c.append(" 50%|█████     | 54/108 [00:10<00:10, 5.4it/s]\n");
+  c.append(" 75%|███████▌  | 81/108 [00:15<00:05, 5.4it/s]\n");
+  c.append("100%|██████████| 108/108 [00:20<00:00, 5.4it/s]\n");
+  c.append("2026-10-29 10:00:21 - INFO - test done\n");
+  const lines = pre.textContent.split("\n");
+  check("LF进度帧: 折叠为一行", lines.filter(l => l.includes("/108")).length === 1);
+  check("LF进度帧: 保留最新帧", pre.textContent.includes("100%|██████████| 108/108"));
+  check("LF进度帧: 前后日志行保留",
+    pre.textContent.includes("test start") && pre.textContent.includes("test done"));
+}
+
+// 场景7: 不同总量的进度条不能互相覆盖(上一条结束后新开一条)
+{
+  const { pre, c } = makeConsole();
+  c.append("100%|██████████| 108/108 [00:20<00:00, 5.4it/s]\n");
+  c.append("  0%|          | 0/50 [00:00<?, ?it/s]\n");
+  c.append(" 50%|█████     | 25/50 [00:10<00:10, 2.5it/s]\n");
+  const bars = pre.textContent.split("\n").filter(l => l.includes("|"));
+  check("不同总量: 两条进度条分别成行", bars.length === 2);
+  check("不同总量: 第二条保留最新帧", pre.textContent.includes("25/50"));
+}
+
+// 场景8: 非进度类重复行不折叠(避免吞掉真实日志)
+{
+  const { pre, c } = makeConsole();
+  c.append("2026-10-29 - INFO - retry 1/1\n");
+  c.append("2026-10-29 - INFO - retry 1/1\n");
+  check("非进度重复行: 不折叠",
+    pre.textContent.split("retry 1/1").length === 3);
+}
+
+// 场景9: 上传进度按行输出(上传中: n/m + 文件名)也折叠
+{
+  const { pre, c } = makeConsole();
+  c.append("  共 100 个文件待上传\n");
+  c.append("  上传中: 1/100\n");
+  c.append("  上传中: 2/100\n");
+  c.append("  上传中: 3/100\n");
+  const ups = pre.textContent.split("\n").filter(l => l.includes("上传中:"));
+  check("上传进度按行输出: 折叠为一行", ups.length === 1);
+  check("上传进度: 保留最新", ups[0]?.includes("3/100"));
+}
+
+// 场景10: 进度帧尾部内容不同(如文件名)不折叠 —— 那是真实信息
+{
+  const { pre, c } = makeConsole();
+  c.append("  上传中: 1/100  a.py\n");
+  c.append("  上传中: 2/100  b.py\n");
+  const ups = pre.textContent.split("\n").filter(l => l.includes("上传中:"));
+  check("进度帧尾部不同: 不折叠", ups.length === 2);
+}
+
 process.exit(failed ? 1 : 0);
