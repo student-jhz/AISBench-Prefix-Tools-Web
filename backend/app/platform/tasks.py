@@ -30,6 +30,55 @@ STATUS_LABELS = {
     "interrupted": "已中断",
 }
 
+# 结果行展示字段契约(v3 前端结果表): 解析层沿用桌面版 CSV 字段名
+# (TTFT_avg / total_req / E2E_throughput 等大写/业务名), 而任务详情 API
+# 对外统一为前端小写驼峰契约。旧版本已持久化的原始行在 public() 视图
+# 层做读时归一化, 升级后历史任务的结果表同样能正常显示。
+_RESULT_FIELD_MAP = {
+    "TTFT_avg": "ttft_avg",
+    "TPOT_avg": "tpot_avg",
+    "E2EL_avg": "e2e_avg",
+    "total_req": "data_num",
+    "E2E_throughput": "total_throughput",
+}
+
+
+def _normalize_result_rows(result: dict, designer: dict) -> list:
+    """把解析层 CSV 字段行归一化为前端结果表字段"""
+    rows = result.get("rows") or []
+    if not isinstance(rows, list):
+        return []
+
+    # 用例设计中的重复率: 按(input_len, output_len)关联到结果行,
+    # 日志本身不产出该字段, 结果表从任务设计回填。
+    repeat_by_case = {}
+    for case in (designer or {}).get("cases") or []:
+        try:
+            repeat_by_case[
+                (int(case["input_len"]), int(case["output_len"]))
+            ] = case.get("repeat_rate")
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    normalized = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        out = dict(row)  # 未映射字段原样透传(对比/下载等不受影响)
+        for src, dst in _RESULT_FIELD_MAP.items():
+            if src in row:
+                out[dst] = row[src]
+        # 并发: 优先取实测 cc, 缺失时回退设计并发 max_cc
+        cc = row.get("cc")
+        if cc in (None, ""):
+            cc = row.get("max_cc")
+        out["concurrency"] = cc if cc not in (None, "") else row.get("concurrency", "")
+        repeat = repeat_by_case.get((row.get("input_len"), row.get("output_len")))
+        if repeat is not None:
+            out["repeat_rate"] = repeat
+        normalized.append(out)
+    return normalized
+
 
 @dataclass
 class PlatformTask:
@@ -108,7 +157,9 @@ class PlatformTask:
             },
         }
         if detail:
-            out["result"] = result
+            result_view = dict(result)
+            result_view["rows"] = _normalize_result_rows(result, self.designer)
+            out["result"] = result_view
         return out
 
 

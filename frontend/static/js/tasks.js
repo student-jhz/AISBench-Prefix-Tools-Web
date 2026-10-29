@@ -275,10 +275,21 @@ function renderDetailResult(t) {
     for (const key of ["input_len", "output_len", "qps", "ttft_avg",
       "tpot_avg", "e2e_avg", "concurrency", "data_num", "total_throughput",
       "hbm_hit_rate", "external_hit_rate", "repeat_rate"]) {
-      tr.append(el("td", {}, formatCell(row[key])));
+      tr.append(el("td", {}, formatResultCell(key, row[key])));
     }
     tbody.append(tr);
   }
+}
+
+/** 结果单元格: 比率类字段带 % 展示(repeat_rate 为小数比例) */
+function formatResultCell(key, v) {
+  if (v === null || v === undefined || v === "") return "-";
+  if (key === "repeat_rate") return `${(Number(v) * 100).toFixed(0)}%`;
+  const n = Number(v);
+  if (Number.isFinite(n) && (key === "hbm_hit_rate" || key === "external_hit_rate")) {
+    return `${n.toLocaleString("zh-CN", { maximumFractionDigits: 2 })}%`;
+  }
+  return formatCell(v);
 }
 
 function formatCell(v) {

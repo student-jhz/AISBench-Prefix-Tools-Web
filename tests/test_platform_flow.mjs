@@ -29,9 +29,11 @@ const TASK_DONE = {
   result: {
     run_id: "t20261028000001abc", log_dir_name: "test_logs_x",
     csv_file: "results_x.csv", row_count: 1,
-    rows: [{ input_len: 8192, output_len: 512, qps: 5, ttft_avg: 200,
-      tpot_avg: 25, e2e_avg: 9000, concurrency: 91, data_num: 216,
-      total_throughput: 13134, hbm_hit_rate: 85.32,
+    // 与后端详情 API 字段契约一致(实测解析样例值):
+    // 若字段名漂移(如后端改回 TTFT_avg), 此处会立即暴露为空列
+    rows: [{ input_len: 8192, output_len: 512, qps: 1.5, ttft_avg: 200.3,
+      tpot_avg: 25.6, e2e_avg: 9000.5, concurrency: 91, data_num: 108,
+      total_throughput: 13134.6, hbm_hit_rate: 85.32,
       external_hit_rate: 92.15, repeat_rate: 0.9 }],
   },
 };
@@ -137,6 +139,10 @@ check("完成后结果列显示", text("tasksTableBody").includes("1 条结果")
 check("详情状态同步为已完成", text("taskDetailStatus").includes("已完成"));
 check("详情结果表渲染", $id("taskResultBody").querySelectorAll("tr").length === 1);
 check("结果表含数据", text("taskResultBody").includes("8,192"));
+check("结果表 TTFT 指标显示", text("taskResultBody").includes("200.3"));
+check("结果表 TPOT 指标显示", text("taskResultBody").includes("25.6"));
+check("结果表命中率带百分号", text("taskResultBody").includes("85.32%"));
+check("结果表重复率带百分号", text("taskResultBody").includes("90%"));
 
 check("无运行时错误", errors.length === 0);
 if (errors.length) console.error("捕获错误:", errors);

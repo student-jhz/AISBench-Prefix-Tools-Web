@@ -129,6 +129,18 @@ class TestTaskFlow:
         assert task["status"] == "done", task
         assert task["result"]["row_count"] == 1
         assert task["result"]["rows"][0]["input_len"] == 8192
+        # v3.0.2: 结果行字段契约 —— 详情 API 直接返回前端结果表字段
+        # (ttft_avg 等), 不再泄漏解析层 CSV 字段名导致指标列全为空
+        row = task["result"]["rows"][0]
+        assert row["ttft_avg"] == 200.3
+        assert row["tpot_avg"] == 25.6
+        assert row["e2e_avg"] == 9000.5
+        assert row["concurrency"] == 91
+        assert row["data_num"] == 108
+        assert row["total_throughput"] == 13134.6
+        assert row["hbm_hit_rate"] == 85.32
+        assert row["external_hit_rate"] == 92.15
+        assert row["repeat_rate"] == 0.9   # 从任务设计的用例回填
         assert task["owner"] == "root"
         assert task["image"] == "aisbench:v1"
 
@@ -147,6 +159,42 @@ class TestTaskFlow:
         # 内部容器已自动清理(机器无残留)
         assert not any(name.startswith("aisbench_task_")
                        for name in ssh.containers)
+
+    def test_legacy_csv_rows_normalized_in_detail(self, tmp_path):
+        """旧版本任务持久化的是解析层 CSV 字段(TTFT_avg 等) ——
+        详情 API 读时归一化为前端字段, 升级后历史任务结果表不空列"""
+        store = TaskStore(tmp_path / "platform")
+        task = store.create(
+            name="旧任务", owner="root", image="aisbench:v1",
+            designer={"cases": [{
+                "input_len": 8192, "output_len": 512, "repeat_rate": 0.9,
+            }]},
+            result={
+                "run_id": "legacy", "csv_file": "results_x.csv",
+                "row_count": 1,
+                "rows": [{
+                    "input_len": 8192, "output_len": 512, "total_req": 108,
+                    "max_cc": 91, "cc": 91, "qps": 1.5,
+                    "TTFT_avg": 200.3, "TPOT_avg": 25.6, "E2EL_avg": 9000.5,
+                    "E2E_throughput": 13134.6,
+                    "hbm_hit_rate": 85.32, "external_hit_rate": 92.15,
+                }],
+            },
+            status="done",
+        )
+        row = task.public(detail=True)["result"]["rows"][0]
+        assert row["ttft_avg"] == 200.3
+        assert row["tpot_avg"] == 25.6
+        assert row["e2e_avg"] == 9000.5
+        assert row["data_num"] == 108
+        assert row["concurrency"] == 91
+        assert row["total_throughput"] == 13134.6
+        assert row["repeat_rate"] == 0.9
+        # cc 缺失时回退设计并发 max_cc
+        task.result["rows"][0]["cc"] = ""
+        task.result["rows"][0].pop("concurrency", None)
+        row = task.public(detail=True)["result"]["rows"][0]
+        assert row["concurrency"] == 91
 
     def test_task_list_and_detail(self, pclient):
         c, ssh, _ = pclient
