@@ -277,6 +277,7 @@ docker compose up -d --build
 | API 集成 | FakeSSH 注入：上传、设计器、配置预览、对比全流程、状态与步骤解锁；v2.0 新增容器池（列表/选择/busy 拦截/启动）、镜像三模式创建、按容器执行、按名清理（含非 aisbench 拒绝与 busy 跳过） |
 | 前端 | `node tests/test_logconsole.mjs`：LogConsole 对 PTY `\r\n`、跨 chunk 分片、孤立 `\r` 进度条、普通 `\n` 等场景的渲染正确性 |
 | 前端 | `node tests/test_bootwatchdog.mjs`：启动自检对已启动/首屏渲染/模块失败/慢启动恢复/脚本 404/非脚本资源错误等场景的判定正确性 |
+| 前端 | `node tests/test_newtask_chips.mjs` / `test_newtask_presets_retry.mjs`：新建任务页输入/输出长度选择栏在有历史设计时必须随预设到达而渲染（v3.0.1 曾因"历史设计提前 return"导致选择栏空白），预设加载失败需可见提示并支持再次进入视图自动重试 |
 | HTML 结构 | `tests/test_html_structure.py`：index.html 标签严格配平、登录区必须是 body 直接子元素、顶栏只允许出现在 #appShell 内、登录 CSS 保持全屏 flex 居中（v3.0.0 曾因未闭合 header 导致登录卡片钉在左上角） |
 | 冒烟 | 应用启动、静态页面、WebSocket 握手 |
 

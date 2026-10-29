@@ -9,6 +9,7 @@ let imagesCache = [];
 let selectedImage = null;
 let imagesLoaded = false;     // 首次进入"新建任务"时自动加载一次
 let presets = { input_lengths: [], output_lengths: [] };
+let presetsPromise = null;    // 长度预设加载 promise(失败时置 null, 允许重试)
 let checkedInputs = new Set();
 let checkedOutputs = new Set();
 
@@ -19,15 +20,23 @@ export function initNewTask() {
   initDesigner();
   $("#submitTaskBtn").addEventListener("click", submitTask);
 
+  // 长度预设先加载: 回填历史设计时才能渲染输入/输出长度选择栏
+  const presetsReady = loadPresets();
   // 回填上次设计的用例(浏览器本地持久化, 刷新不丢失)
-  if (G.designer.params && G.designer.cases.length) restoreDesigner();
-  loadPresets();
-  // 首次进入新建任务视图时自动拉取镜像列表(之后可手动刷新)
-  window.loadImagesOnce = () => {
-    if (imagesLoaded) return;
-    imagesLoaded = true;
-    refreshImages();
+  if (G.designer.params && G.designer.cases.length) {
+    restoreDesigner(presetsReady);
+  }
+  // 每次进入"新建任务"视图: 首次自动拉取镜像; 长度预设失败时自动重试
+  window.enterNewTaskView = () => {
+    loadImagesOnce();
+    if (!presetsPromise) loadPresets();
   };
+}
+
+function loadImagesOnce() {
+  if (imagesLoaded) return;
+  imagesLoaded = true;
+  refreshImages();
 }
 
 
@@ -227,21 +236,41 @@ function initDesigner() {
     () => adjustCases("conc", Number(btn.dataset.factor))));
 }
 
-async function loadPresets() {
-  try {
-    presets = await api.get("/api/designer/presets");
-    if (G.designer.params && G.designer.cases.length) return;
-    // 默认勾选: 输入前两个有效项, 输出 512/1024
-    const maxLen = Number($("#kvMaxLen").value) || 0;
-    const validInputs = presets.input_lengths.filter(l => !maxLen || l < maxLen);
-    checkedInputs = new Set(validInputs.slice(0, 2));
-    checkedOutputs = new Set(
-      presets.output_lengths.filter(l => [128, 256, 512, 1024].includes(l)));
+function loadPresets() {
+  const p = (async () => {
+    const data = await api.get("/api/designer/presets", { silent: true });
+    presets = {
+      input_lengths: Array.isArray(data?.input_lengths) ? [...data.input_lengths] : [],
+      output_lengths: Array.isArray(data?.output_lengths) ? [...data.output_lengths] : [],
+    };
+    setMsg("#designerMsg", "");   // 清除上次失败提示
+    // 全新表单才应用默认勾选; 回填历史设计时保留历史勾选
+    if (!G.designer.params || !G.designer.cases.length) applyDefaultChecks();
+    // 关键修复: 预设到达后必须重渲染长度选择栏。
+    // 旧逻辑在存在历史设计时提前 return, 而回填渲染发生在预设到达之前,
+    // 导致选择栏以空 presets 渲染后永远不再刷新(偶发"长度选择栏消失")。
     renderLengthChips();
-  } catch { /* 预设失败不阻塞 */ }
+    return presets;
+  })();
+  presetsPromise = p;
+  p.catch(err => {
+    presetsPromise = null;   // 置空以允许下次进入视图时重试
+    setMsg("#designerMsg",
+      `输入/输出长度预设加载失败: ${err.message} — 再次进入本页将自动重试`, "error");
+  });
+  return p;
 }
 
-async function restoreDesigner() {
+function applyDefaultChecks() {
+  // 默认勾选: 输入前两个有效项, 输出 512/1024
+  const maxLen = Number($("#kvMaxLen").value) || 0;
+  const validInputs = presets.input_lengths.filter(l => !maxLen || l < maxLen);
+  checkedInputs = new Set(validInputs.slice(0, 2));
+  checkedOutputs = new Set(
+    presets.output_lengths.filter(l => [128, 256, 512, 1024].includes(l)));
+}
+
+async function restoreDesigner(presetsReady, message = "已恢复上次设计的测试用例") {
   const d = G.designer;
   $("#kvCache").value = d.params.single_kv_cache ?? "";
   $("#kvDp").value = d.params.dp ?? 1;
@@ -250,9 +279,11 @@ async function restoreDesigner() {
   $("#kvRequestRate").value = d.params.request_rate ?? 0;
   checkedInputs = new Set(d.input_lengths || []);
   checkedOutputs = new Set(d.output_lengths || []);
+  // 等待长度预设到达后再渲染选择栏(否则渲染瞬间 presets 为空 → 选择栏不可见)
+  try { await presetsReady; } catch { /* 失败已提示, 以占位文案渲染 */ }
   renderLengthChips();
   renderCases();
-  toast("已恢复上次设计的测试用例", "info");
+  toast(message, "info");
   try {
     const data = await api.post("/api/designer/cases",
       { ...d.params, cases: d.cases }, { silent: true });
@@ -273,6 +304,12 @@ function renderLengthChips() {
 
 function renderChips(container, values, checkedSet, isDisabled) {
   container.innerHTML = "";
+  if (!values.length) {
+    // 预设缺失时给出可见占位, 而不是空白区域让用户以为界面坏了
+    container.append(el("span", { class: "hint-text" },
+      "暂无可选长度(预设未加载, 再次进入本页将自动重试)"));
+    return;
+  }
   for (const value of values) {
     const disabled = isDisabled(value);
     if (disabled) checkedSet.delete(value);
