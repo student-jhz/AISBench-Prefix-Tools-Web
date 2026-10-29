@@ -2,7 +2,7 @@
 
 import { $, bindPasswordToggle, setMsg, toast } from "./util.js";
 import { api, auth } from "./api.js";
-import { enterApp } from "./main.js";
+import { enterApp } from "./state.js";
 
 
 export function initLogin() {

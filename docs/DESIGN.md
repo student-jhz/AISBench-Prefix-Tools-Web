@@ -277,6 +277,7 @@ docker compose up -d --build
 | API 集成 | FakeSSH 注入：上传、设计器、配置预览、对比全流程、状态与步骤解锁；v2.0 新增容器池（列表/选择/busy 拦截/启动）、镜像三模式创建、按容器执行、按名清理（含非 aisbench 拒绝与 busy 跳过） |
 | 前端 | `node tests/test_logconsole.mjs`：LogConsole 对 PTY `\r\n`、跨 chunk 分片、孤立 `\r` 进度条、普通 `\n` 等场景的渲染正确性 |
 | 前端 | `node tests/test_bootwatchdog.mjs`：启动自检对已启动/首屏渲染/模块失败/慢启动恢复/脚本 404/非脚本资源错误等场景的判定正确性 |
+| 前端 | `node tests/test_password_toggle.mjs` + `test_password_toggle_versioned_entry.mjs`：登录密码显隐；后者以带 `?v=` 的 URL 导入入口模块（与 index.html 一致）并静态守卫"任何模块不得反向 import ./main.js"—— v3.0.0 曾因此产生两份 main.js 实例，密码按钮挂两个监听器互相抵消，表现为点击后仍隐藏 |
 | 前端 | `node tests/test_newtask_chips.mjs` / `test_newtask_presets_retry.mjs`：新建任务页输入/输出长度选择栏在有历史设计时必须随预设到达而渲染（v3.0.1 曾因"历史设计提前 return"导致选择栏空白），预设加载失败需可见提示并支持再次进入视图自动重试 |
 | 前端 | `node tests/test_copy_task.mjs`：复制历史任务全流程 —— 列表「复制」按钮 → copy-source 接口 → 表单回填（名称/镜像/配置/长度选择栏/用例）→ 提交体携带完整配置 |
 | API 集成 | `tests/test_platform.py` copy-source 用例：返回用户提交内容（镜像/配置/用例/勾选长度）且不暴露 container/token/work_dir；早期任务未存勾选长度时从用例反推 |

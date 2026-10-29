@@ -2,7 +2,7 @@
 
 import { $, $$, el, fmtLen, setMsg, toast, modal } from "./util.js";
 import { api } from "./api.js";
-import { G, saveDesigner, showView } from "./main.js";
+import { G, saveDesigner, showView } from "./state.js";
 
 
 let imagesCache = [];

@@ -157,6 +157,10 @@ node tests/test_logconsole.mjs
 # 前端启动自检测试（慢启动/模块失败/脚本404 等场景）
 node tests/test_bootwatchdog.mjs
 
+# 登录密码显隐回归（版本化入口 URL + 禁止反向 import main.js）
+node tests/test_password_toggle.mjs
+node tests/test_password_toggle_versioned_entry.mjs
+
 # 新建任务页长度选择栏回归（历史设计回填 + 预设重试场景）
 node tests/test_newtask_chips.mjs
 node tests/test_newtask_presets_retry.mjs

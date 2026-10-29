@@ -2,7 +2,7 @@
 
 import { $, el, setMsg, toast, confirmDialog } from "./util.js";
 import { api } from "./api.js";
-import { G, showView, subscribeTaskLog } from "./main.js";
+import { G, showView, subscribeTaskLog } from "./state.js";
 
 const ACTIVE_STATUSES = new Set(["queued", "preparing", "running", "collecting"]);
 
