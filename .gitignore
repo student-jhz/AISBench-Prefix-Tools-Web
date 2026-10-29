@@ -12,3 +12,4 @@ results/
 *.log
 .env
 .DS_Store
+.preview/

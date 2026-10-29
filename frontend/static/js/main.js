@@ -97,6 +97,7 @@ export function showView(view) {
   $(`#view-${view}`).classList.add("active");
   $$(".nav-item").forEach(n =>
     n.classList.toggle("active", n.dataset.view === view));
+  if (view === "newtask") window.loadImagesOnce?.();
   if (view === "compare") window.refreshCompareSources?.();
 }
 

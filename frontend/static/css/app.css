@@ -631,6 +631,7 @@ code {
 
 
 /* ============ v3.0 平台: 登录界面 ============ */
+#loginWrap[hidden], #appShell[hidden] { display: none; }
 .login-wrap {
   min-height: 100vh;
   display: flex;

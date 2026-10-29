@@ -7,6 +7,7 @@ import { G, saveDesigner, showView } from "./main.js";
 
 let imagesCache = [];
 let selectedImage = null;
+let imagesLoaded = false;     // 首次进入"新建任务"时自动加载一次
 let presets = { input_lengths: [], output_lengths: [] };
 let checkedInputs = new Set();
 let checkedOutputs = new Set();
@@ -21,6 +22,12 @@ export function initNewTask() {
   // 回填上次设计的用例(浏览器本地持久化, 刷新不丢失)
   if (G.designer.params && G.designer.cases.length) restoreDesigner();
   loadPresets();
+  // 首次进入新建任务视图时自动拉取镜像列表(之后可手动刷新)
+  window.loadImagesOnce = () => {
+    if (imagesLoaded) return;
+    imagesLoaded = true;
+    refreshImages();
+  };
 }
 
 
