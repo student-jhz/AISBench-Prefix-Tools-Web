@@ -55,6 +55,19 @@ export class LogConsole {
     this.render();
   }
 
+  /** 一次性载入服务端历史快照: 整段解析后单次渲染, 并直接定位到最新
+   *
+   * 与逐条 append 的区别: 不产生"日志从头滚动重放"的观感,
+   * 断线重连收到完整快照时整屏替换, 也不会重复追加已有内容。
+   */
+  setHistory(text) {
+    this.lines = [];
+    this.pending = "";
+    if (text) this.append(text);
+    this.render();
+    this.pre.scrollTop = this.pre.scrollHeight;
+  }
+
   render() {
     const atBottom = this.pre.scrollTop + this.pre.clientHeight >= this.pre.scrollHeight - 40;
     this.pre.textContent = this.lines.join("\n");

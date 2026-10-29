@@ -65,4 +65,25 @@ function check(name, cond) {
   check("普通LF: 行结构正确", text.split("\n").length >= 3 && text.includes("Docker version"));
 }
 
+// 场景5: 历史快照一次性载入(v3.0.2: 打开任务日志直接整屏展示,
+// 不逐条重放; 单次渲染后直接定位到最新位置)
+{
+  const { pre, c } = makeConsole();
+  c.setHistory("[1/6] 上传测试代码...\n[2/6] 准备执行环境...\n[4/6] 执行测试中...\n");
+  const text = pre.textContent;
+  check("历史快照: 内容完整",
+    text.includes("[1/6]") && text.includes("[4/6]"));
+  check("历史快照: 定位到底部", pre.scrollTop === pre.scrollHeight);
+
+  // 快照后实时增量继续追加
+  c.append("[6/6] 解析日志生成结果...\n");
+  check("快照后: 实时增量追加", pre.textContent.includes("[6/6]"));
+
+  // 断线重连: 再次收到完整快照时整体替换, 不重复追加
+  c.setHistory("[1/6] 上传测试代码...\n[6/6] 解析日志生成结果...\n✓ 任务完成\n");
+  const again = pre.textContent;
+  check("重连快照: 整体替换不重复",
+    again.split("[1/6]").length === 2 && again.includes("✓ 任务完成"));
+}
+
 process.exit(failed ? 1 : 0);

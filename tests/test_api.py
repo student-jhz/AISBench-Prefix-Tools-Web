@@ -63,6 +63,31 @@ class TestSystem:
         # 加载失败兜底横幅存在(模块崩溃时可见提示而非空白页)
         assert 'id="bootError"' in body
 
+    def test_ws_logs_history_snapshot_then_live(self, tmp_path):
+        """日志通道: 首批历史合并为单条快照(history=true)一次性下发,
+        之后才逐条推送实时增量。
+
+        打开任务详情时前端整屏渲染一次并定位到最新, 而不是逐条重放
+        "日志从头滚动"; 断线重连时快照整体替换, 不会重复追加。
+        """
+        ssh = FakeSSH()
+        app = create_app(ssh_manager=ssh, data_dir=tmp_path,
+                         ssh_factory=FakeSSH)
+        bus = app.state.logbus
+        bus.clear("exec")
+        bus.append("exec", "历史行1\n")
+        bus.append("exec", "历史行2\n")
+        c = TestClient(app)
+        with c.websocket_connect("/ws/logs?channels=exec") as ws:
+            snap = ws.receive_json()
+            assert snap["history"] is True
+            assert snap["text"] == "历史行1\n历史行2\n"
+
+            bus.append("exec", "实时行3\n")
+            live = ws.receive_json()
+            assert "history" not in live
+            assert live["text"] == "实时行3\n"
+
     def test_state_no_ssh_roundtrip(self, client, tmp_path):
         """v2.0.2: /api/state 是高频轮询端点, 不做任何 SSH/docker 往返
 

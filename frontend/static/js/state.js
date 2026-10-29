@@ -115,9 +115,13 @@ export function initLogConsoles() {
   G.logSocket = new LogSocket(
     data => {
       const target = G.consoles[data.channel];
-      if (target) target.append(data.text);
+      if (!target) return;
+      // 历史快照: 整屏一次性渲染(打开任务直接看到当前日志全貌,
+      // 而非逐条重放); 实时增量才走逐条 append。
+      if (data.history) target.setHistory(data.text || "");
+      else target.append(data.text);
     },
-    () => { /* 重连后服务端按 seq 补发历史 */ });
+    () => { /* 重连后服务端下发历史快照, 前端整屏替换 */ });
   $("#taskLogClearBtn")?.addEventListener("click", () => G.consoles.task?.clear());
 }
 

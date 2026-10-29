@@ -104,17 +104,32 @@ def create_app(ssh_manager=None, data_dir=None, ssh_factory=None) -> FastAPI:
         channels_param = ws.query_params.get("channels", "deploy,exec")
         channels = [c.strip() for c in channels_param.split(",") if c.strip()]
         cursor = {ch: 0 for ch in channels}
+        replayed = {ch: False for ch in channels}
         try:
             while True:
                 sent = False
                 for ch in channels:
                     events = bus.since(ch, cursor[ch])
-                    for seq, text in events:
+                    if not events:
+                        continue
+                    if not replayed[ch]:
+                        # 首批事件: 合并为单条历史快照(history=true)一次性
+                        # 下发。前端整屏渲染一次并定位到最新, 避免"打开任务
+                        # 日志从头逐条重放"的观感; 断线重连时快照整体替换
+                        # 控制台内容, 也不会重复追加已显示的日志。
                         await ws.send_json({
-                            "channel": ch, "seq": seq, "text": text,
+                            "channel": ch, "seq": events[-1][0],
+                            "text": "".join(text for _, text in events),
+                            "history": True,
                         })
-                        cursor[ch] = seq
-                        sent = True
+                        replayed[ch] = True
+                    else:
+                        for seq, text in events:
+                            await ws.send_json({
+                                "channel": ch, "seq": seq, "text": text,
+                            })
+                    cursor[ch] = events[-1][0]
+                    sent = True
                 if not sent:
                     await asyncio.sleep(0.1)
         except WebSocketDisconnect:
