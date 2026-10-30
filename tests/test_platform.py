@@ -60,6 +60,13 @@ TASK_BODY = {
     "designer": DESIGNER_PAYLOAD,
 }
 
+SAMPLE_VLLM_LOG = """INFO 10-30 12:00:00 Automatically detected platform
+INFO 10-30 12:00:01 # GPU blocks: 1551, # CPU blocks: 512
+INFO 10-30 12:00:02 GPU KV cache size: 198,469 tokens
+INFO 10-30 12:00:02 Maximum concurrency for 131,072 tokens per request: 3.84x
+INFO 10-30 12:00:03 Model loading took 12.3 GB
+"""
+
 
 def wait_task(c, task_id, headers=None, timeout=20):
     deadline = time.time() + timeout
@@ -327,6 +334,139 @@ class TestStartupRecovery:
         tasks = store.list()
         assert tasks[0].status == "interrupted"
         assert "中断" in tasks[0].error
+
+
+class TestEngineParams:
+    """引擎参数自动获取: 从 vLLM 日志筛选 KV cache / 最大上下文
+
+    方法迁移自桌面版 AISBench-Prefix-Tools 的日志工具:
+    grep -e 'GPU KV cache size' -e 'Maximum concurrency',
+    三种日志来源(宿主机文件 / 容器内文件 / docker logs)。
+    """
+
+    def _login(self, c):
+        headers, _ = login(c)
+        return headers
+
+    def _prepare_engine(self, ssh):
+        ssh.containers["vllm_engine"] = "Up 2 hours"
+        ssh.container_meta["vllm_engine"] = {
+            "image": "vllm/vllm-openai:latest", "binds": []}
+        ssh.container_logs["vllm_engine"] = SAMPLE_VLLM_LOG
+        ssh.files["/root/vllm_serve.log"] = SAMPLE_VLLM_LOG
+        ssh.files["/logs/vllm_serve.log"] = SAMPLE_VLLM_LOG
+
+    def test_grep_host_log(self, pclient):
+        c, ssh, _ = pclient
+        headers = self._login(c)
+        ssh.files["/root/vllm_serve.log"] = SAMPLE_VLLM_LOG
+
+        r = c.post("/api/platform/engine/grep", headers=headers,
+                   json={"mode": "host", "path": "/root/vllm_serve.log"})
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["kv"] == 198469
+        assert data["max_len"] == 131072
+        assert data["parsed"] is True
+        assert "GPU KV cache size: 198,469 tokens" in data["output"]
+        assert "Maximum concurrency" in data["command"]
+
+    def test_grep_container_file(self, pclient):
+        c, ssh, _ = pclient
+        headers = self._login(c)
+        self._prepare_engine(ssh)
+
+        r = c.post("/api/platform/engine/grep", headers=headers,
+                   json={"mode": "container", "container": "vllm_engine",
+                         "path": "/logs/vllm_serve.log"})
+        assert r.status_code == 200, r.text
+        assert r.json()["kv"] == 198469
+        assert r.json()["max_len"] == 131072
+        assert r.json()["parsed"] is True
+
+    def test_grep_docker_logs(self, pclient):
+        c, ssh, _ = pclient
+        headers = self._login(c)
+        self._prepare_engine(ssh)
+
+        r = c.post("/api/platform/engine/grep", headers=headers,
+                   json={"mode": "docker_logs", "container": "vllm_engine"})
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["kv"] == 198469
+        assert data["max_len"] == 131072
+        assert "docker logs" in data["command"]
+
+    def test_grep_no_match(self, pclient):
+        """非 vLLM 日志 → exit 1, 返回提示而非误报数值"""
+        c, ssh, _ = pclient
+        headers = self._login(c)
+        ssh.files["/root/other.log"] = "some unrelated log\n"
+
+        r = c.post("/api/platform/engine/grep", headers=headers,
+                   json={"mode": "host", "path": "/root/other.log"})
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["code"] == 1
+        assert data["parsed"] is False
+        assert data["kv"] is None and data["max_len"] is None
+        assert "未找到匹配行" in data["output"]
+
+    def test_containers_list_running_only(self, pclient):
+        c, ssh, _ = pclient
+        headers = self._login(c)
+        ssh.containers["vllm_engine"] = "Up 2 hours"
+        ssh.containers["stopped_one"] = "Exited (0) 5 minutes ago"
+
+        r = c.get("/api/platform/engine/containers", headers=headers)
+        assert r.status_code == 200, r.text
+        names = [item["name"] for item in r.json()["containers"]]
+        assert names == ["vllm_engine"]
+        assert r.json()["containers"][0]["image"] == "fakeimage:latest"
+
+    def test_list_host_and_container_dirs(self, pclient):
+        c, ssh, _ = pclient
+        headers = self._login(c)
+        self._prepare_engine(ssh)
+
+        r = c.get("/api/platform/engine/list",
+                  params={"mode": "host", "path": "/root"}, headers=headers)
+        assert r.status_code == 200, r.text
+        names = [e["name"] for e in r.json()["entries"]]
+        assert "vllm_serve.log" in names
+
+        r = c.get("/api/platform/engine/list",
+                  params={"mode": "container", "path": "/logs",
+                          "container": "vllm_engine"}, headers=headers)
+        assert r.status_code == 200, r.text
+        entries = r.json()["entries"]
+        assert any(e["name"] == "vllm_serve.log" and e["type"] == "file"
+                   for e in entries)
+
+    def test_grep_requires_auth(self, pclient):
+        c, _, _ = pclient
+        r = c.post("/api/platform/engine/grep",
+                   json={"mode": "host", "path": "/root/vllm_serve.log"})
+        assert r.status_code == 401
+        assert c.get("/api/platform/engine/containers").status_code == 401
+
+    def test_grep_invalid_mode_rejected(self, pclient):
+        c, _, _ = pclient
+        headers = self._login(c)
+        r = c.post("/api/platform/engine/grep", headers=headers,
+                   json={"mode": "exec", "path": "/x"})
+        assert r.status_code == 422
+
+    def test_grep_missing_selection(self, pclient):
+        """缺容器/路径 → 明确 400, 而非静默空结果"""
+        c, _, _ = pclient
+        headers = self._login(c)
+        r = c.post("/api/platform/engine/grep", headers=headers,
+                   json={"mode": "docker_logs"})
+        assert r.status_code == 400
+        r = c.post("/api/platform/engine/grep", headers=headers,
+                   json={"mode": "host"})
+        assert r.status_code == 400
 
 
 class TestTaskStoreAtomicity:

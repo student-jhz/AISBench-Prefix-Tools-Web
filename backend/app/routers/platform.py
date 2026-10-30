@@ -8,11 +8,12 @@ import shutil
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..core import config_manager as cm
+from ..core import kv_log_tools as kvt
 from ..core.docker_manager import DockerManager
 from ..core.ssh_manager import RemoteFSError
 from ..core.test_designer import TestDesigner
 from ..platform.sessions import UserSession
-from ..schemas import PlatformTaskCreateRequest
+from ..schemas import EngineGrepRequest, PlatformTaskCreateRequest
 from ..state import AppState
 from .auth import require_session
 from .deps import get_state
@@ -153,3 +154,78 @@ def list_remote_dir(path: str = "/",
     except RemoteFSError as e:
         raise HTTPException(400, str(e))
     return {"path": path, "entries": entries}
+
+
+# ------------------------------------------------------------
+# 引擎参数自动获取: 从 vLLM 引擎日志筛选 GPU KV cache size /
+# Maximum concurrency, 用于测试用例设计的 KV cache 与最大请求长度
+# (方法迁移自桌面版 AISBench-Prefix-Tools 的日志工具, 三种日志来源)
+# ------------------------------------------------------------
+
+@router.get("/engine/containers")
+def engine_containers(state: AppState = Depends(get_state),
+                      session: UserSession = Depends(require_session)):
+    """列出执行机上运行中的容器(定位 vLLM 引擎日志用)
+
+    这里列出的是用户/运维自行启动的推理服务容器, 不是平台自动创建的
+    测试执行容器 —— 后者对用户始终不可见。
+    """
+    try:
+        items = kvt.list_containers(session.ssh)
+    except RuntimeError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"containers": items}
+
+
+@router.get("/engine/list")
+def engine_list(mode: str = "host", path: str = "/",
+                container: str = "",
+                session: UserSession = Depends(require_session)):
+    """浏览引擎日志所在目录(host=SFTP / container=docker exec ls)"""
+    if mode not in ("host", "container"):
+        raise HTTPException(400, "mode 仅支持 host/container")
+    try:
+        entries = kvt.list_dir(session.ssh, mode, path, container or None)
+    except RemoteFSError as e:
+        raise HTTPException(400, str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"列出目录失败: {e}") from e
+    return {"path": path, "entries": entries}
+
+
+@router.post("/engine/grep")
+def engine_grep(req: EngineGrepRequest,
+                session: UserSession = Depends(require_session)):
+    """在选定日志来源中筛选 vLLM KV cache 信息并解析
+
+    返回 (单个DP组KV cache tokens, 模型最大上下文 tokens):
+      GPU KV cache size: 198,469 tokens
+      Maximum concurrency for 131,072 tokens per request: 3.84x
+    """
+    cmd = kvt.build_grep_command(req.mode, req.container, req.path)
+    if cmd is None:
+        raise HTTPException(400, "无法生成筛选命令, 请检查容器/文件选择")
+
+    code, out, err = session.ssh.execute(cmd, timeout=180)
+    result = {
+        "command": cmd,
+        "code": code,
+        "output": "",
+        "error": "",
+        "kv": None,
+        "max_len": None,
+        "parsed": False,
+    }
+    if code == 0 and out.strip():
+        result["output"] = out.rstrip() + "\n"
+        kv, max_len = kvt.parse_kv_results(out)
+        result["kv"] = kv
+        result["max_len"] = max_len
+        result["parsed"] = kv is not None or max_len is not None
+    elif code == 1:
+        result["output"] = "(未找到匹配行, 请确认选择的是 vLLM 启动日志)\n"
+    else:
+        result["error"] = err.strip() or out.strip() or f"exit={code}"
+    return result

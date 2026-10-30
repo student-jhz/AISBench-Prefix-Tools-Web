@@ -47,6 +47,7 @@ class FakeSSH:
         self.container_meta = {}    # name -> {"image", "binds"}
         self.busy_containers = set()  # 模拟正在执行测试的容器
         self.container_fs = {}  # name -> {容器内路径: [子目录名, ...]}(ls 浏览用)
+        self.container_logs = {}  # name -> 容器日志文本(docker logs / 引擎 KV grep)
         self.exec_log = []
 
     # ------------------------------------------------------------ 连接
@@ -103,6 +104,17 @@ class FakeSSH:
                     "Status": status,
                     "RunningFor": "About a minute ago",
                 }) + "\n"
+            return 0, out, ""
+
+        # ---- v3.0.2 引擎参数获取: 运行中容器列表(管道分隔格式) ----
+        if "docker ps --format" in command and "{{.Names}}" in command:
+            out = ""
+            for name, status in self.containers.items():
+                if not status.lower().startswith("up"):
+                    continue   # docker ps(不带 -a)只列运行中
+                meta = self.container_meta.get(name, {})
+                out += (f"{name}|{status}|"
+                        f"{meta.get('image', 'fakeimage:latest')}\n")
             return 0, out, ""
 
         # ---- v2.0.1: docker inspect(标准 JSON 输出, 镜像/状态/挂载) ----
@@ -217,11 +229,51 @@ class FakeSSH:
         if "_check_model_path.py" in command:
             return 0, "OK: MODEL_PATH=/mnt/models/ds\n", ""
 
+        # ---- v3.0.2 引擎参数获取: 容器内目录浏览(docker exec ls -la) ----
+        if "docker exec" in command and "ls -la" in command:
+            m = re.search(r"docker exec '?([\w.-]+)'? ls -la (\S+)", command)
+            name, path = (m.group(1), m.group(2)) if m else ("", "")
+            if name not in self.containers:
+                return 1, "", f"Error: No such container: {name}"
+            # 容器 FS 用 container_fs 描述; 未描述时给含 vllm_serve.log 的
+            # 默认列表(与 execute_with_callback 的既有行为一致)
+            names = self.container_fs.get(name, {}).get(path)
+            if names is None:
+                names = ["vllm_serve.log"]
+            out = "total 4\n"
+            for n in names:
+                out += f"-rw-r--r-- 1 root root 1024 Jan 1 00:00 {n}\n"
+            return 0, out, ""
+
         if "tar -xOf" in command:
             return 0, "", ""
 
-        if "grep" in command and "GPU KV cache size" in command:
-            return 1, "", ""
+        # ---- v3.0.2 引擎参数获取: vLLM KV cache grep(host/容器文件/docker logs) ----
+        # 忠实模拟 grep: 从文件/容器日志中筛选含标记的行, 无匹配则 exit 1
+        if "grep" in command and "GPU KV cache size" in command \
+                and "Maximum concurrency" in command:
+            if command.startswith("docker logs"):
+                # shlex.quote 仅对含特殊字符的名称加引号
+                m = re.search(r"docker logs '?([\w.-]+)'?", command)
+                cname = m.group(1) if m else ""
+                if cname not in self.containers:
+                    return 1, "", f"Error: No such container: {cname}"
+                source = self.container_logs.get(cname, "")
+            else:
+                # 路径是命令最后一个参数; shlex.quote 仅对含特殊字符的
+                # 路径加引号, 简单路径(/root/a.log)不带引号
+                m = re.search(r"Maximum concurrency'\s+(.+)$", command)
+                path = (m.group(1) if m else "").strip().strip("'")
+                content = self.files.get(path)
+                if content is None:
+                    return 1, "", ""
+                source = content if isinstance(content, str) \
+                    else content.decode("utf-8", errors="replace")
+            lines = [l for l in source.splitlines()
+                     if "GPU KV cache size" in l
+                     or "Maximum concurrency" in l]
+            out = "\n".join(lines) + ("\n" if lines else "")
+            return (0 if lines else 1), out, ""
 
         if command.startswith("tail "):
             m = re.search(r"tail -c \d+ (\S+)", command)

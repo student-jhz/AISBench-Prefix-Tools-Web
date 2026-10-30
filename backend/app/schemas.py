@@ -154,6 +154,13 @@ class LogtoolsViewRequest(LogtoolsGrepRequest):
     pass
 
 
+class EngineGrepRequest(BaseModel):
+    """从 vLLM 引擎日志筛选 KV cache / 最大上下文(平台会话版)"""
+    mode: str = Field(pattern="^(host|container|docker_logs)$")
+    path: Optional[str] = None
+    container: Optional[str] = None
+
+
 # ------------------------------------------------------------ 结果对比
 
 class CompareSource(BaseModel):

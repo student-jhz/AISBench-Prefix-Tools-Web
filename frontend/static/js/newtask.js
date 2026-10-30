@@ -242,6 +242,7 @@ function parentPath(p) {
 
 function initDesigner() {
   $("#kvMaxLen").addEventListener("input", renderLengthChips);
+  $("#kvAutoFetchBtn").addEventListener("click", showEngineKvModal);
   $("#generateCasesBtn").addEventListener("click", generateCases);
   $("#addCaseBtn").addEventListener("click", showAddCaseModal);
   $("#dupCaseBtn").addEventListener("click", duplicateSelectedCase);
@@ -251,6 +252,269 @@ function initDesigner() {
   $$(".adj-conc").forEach(btn => btn.addEventListener("click",
     () => adjustCases("conc", Number(btn.dataset.factor))));
 }
+
+
+/* ============ 3 · 引擎参数自动获取(从 vLLM 日志) ============ */
+
+/**
+ * 从 vLLM 引擎日志获取 GPU KV cache size / Maximum concurrency,
+ * 填入「单个DP组KV cache」与「最大请求长度」。
+ * 三种日志来源(与桌面版 AISBench-Prefix-Tools 的日志工具一致):
+ *   host        宿主机日志文件(如 /root/vllm_serve.log)
+ *   container   容器内日志文件(docker exec grep)
+ *   docker_logs 容器运行日志(docker logs | grep)
+ */
+function showEngineKvModal() {
+  let mode = "host";
+  let currentPath = "/";
+  let parsed = null;        // {kv, max_len}
+
+  const m = modal({ title: "从引擎日志获取 KV cache / 最大请求长度", large: true });
+
+  // ---- 来源选择 ----
+  const modeOptions = [
+    ["host", "宿主机日志文件"],
+    ["container", "容器内日志文件"],
+    ["docker_logs", "容器运行日志 (docker logs)"],
+  ];
+  const modeRadios = modeOptions.map(([value, label]) => {
+    const input = el("input", { type: "radio", name: "engineLogMode", value });
+    input.checked = value === mode;
+    input.addEventListener("change", () => {
+      if (!input.checked) return;
+      mode = value;
+      updateModeUI();
+    });
+    return el("label", { class: "checkbox-inline" }, input, el("span", {}, label));
+  });
+  const modeRow = el("div", { class: "form-actions", style: "margin-bottom:10px" },
+    ...modeRadios);
+
+  // ---- 容器选择(container/docker_logs 模式) ----
+  const containerSelect = el("select", { style: "flex:1;min-width:220px" });
+  const refreshContainersBtn = el("button", {
+    class: "btn btn-outline btn-sm", type: "button",
+    onclick: () => loadContainers(true),
+  }, "↻ 刷新容器");
+  const containerRow = el("div", { class: "form-actions", style: "margin-bottom:10px" },
+    el("span", { class: "hint-text" }, "引擎容器:"),
+    containerSelect, refreshContainersBtn,
+    el("span", { class: "hint-text" }, "vLLM 服务所在容器(非平台测试容器)"));
+
+  // ---- 日志路径(host/container 模式) ----
+  const pathInput = el("input", { type: "text", value: currentPath, style: "flex:1" });
+  const goBtn = el("button", {
+    class: "btn btn-outline btn-sm", type: "button",
+    onclick: () => loadDir(pathInput.value.trim() || "/"),
+  }, "浏览");
+  const upBtn = el("button", {
+    class: "btn btn-outline btn-sm", type: "button",
+    onclick: () => loadDir(parentPath(currentPath)),
+  }, "↑ 上级");
+  const pathRow = el("div", { class: "browser-path-row", style: "margin-bottom:8px" },
+    pathInput, goBtn, upBtn);
+
+  const listBox = el("div", {
+    class: "browser-list",
+    style: "height:220px;margin-bottom:10px",
+  });
+
+  // ---- 操作与结果 ----
+  const grepBtn = el("button", { class: "btn btn-primary", type: "button" },
+    "🔍 筛选 KV cache");
+  const statusEl = el("span", { class: "inline-msg muted" });
+  const actionRow = el("div", { class: "form-actions", style: "margin-bottom:10px" },
+    grepBtn, statusEl);
+
+  const cmdRow = el("div", { class: "command-display", style: "margin-bottom:8px" });
+  const resultPre = el("pre", {
+    class: "log-console", style: "height:140px;margin-bottom:8px",
+  }, "(点击「筛选 KV cache」后显示结果)");
+  const parsedEl = el("div", { class: "inline-msg", style: "margin-bottom:4px" });
+  const mapHint = el("div", { class: "hint-text", style: "margin-bottom:8px" },
+    "GPU KV cache size → 单个DP组KV cache；Maximum concurrency → 最大请求长度");
+
+  function updateModeUI() {
+    containerRow.hidden = mode === "host";
+    pathRow.hidden = mode === "docker_logs";
+    listBox.hidden = mode === "docker_logs";
+    if (mode !== "host") loadContainers();
+    else if (!listBox.children.length) loadDir("/");
+    parsed = null;
+    parsedEl.textContent = "";
+    fillBtn.disabled = true;
+  }
+
+  async function loadContainers(force = false) {
+    if (containerSelect.options.length && !force) return;
+    statusEl.textContent = "加载容器列表...";
+    statusEl.className = "inline-msg warn";
+    try {
+      const data = await api.get("/api/platform/engine/containers");
+      containerSelect.innerHTML = "";
+      const items = data.containers || [];
+      if (!items.length) {
+        containerSelect.append(el("option", { value: "" },
+          "(没有运行中的容器)"));
+      }
+      for (const item of items) {
+        containerSelect.append(el("option", { value: item.name },
+          `${item.name}  (${item.image || "?"})`));
+      }
+      statusEl.textContent = "";
+      statusEl.className = "inline-msg muted";
+    } catch (err) {
+      statusEl.textContent = `容器列表加载失败: ${err.message}`;
+      statusEl.className = "inline-msg error";
+    }
+  }
+
+  async function loadDir(path) {
+    currentPath = (path || "/").replace(/\/+$/, "") || "/";
+    pathInput.value = currentPath;
+    listBox.innerHTML = `<div class="file-list-empty">加载中...</div>`;
+    try {
+      const params = new URLSearchParams({ mode, path: currentPath });
+      if (mode === "container") params.set("container", containerSelect.value);
+      const data = await api.get(`/api/platform/engine/list?${params}`);
+      renderDir(data.entries || []);
+    } catch (err) {
+      listBox.innerHTML = "";
+      statusEl.textContent = `目录加载失败: ${err.message}`;
+      statusEl.className = "inline-msg error";
+    }
+  }
+
+  function renderDir(entries) {
+    listBox.innerHTML = "";
+    statusEl.textContent = "";
+    statusEl.className = "inline-msg muted";
+    if (!entries.length) {
+      listBox.innerHTML = `<div class="file-list-empty">(空目录)</div>`;
+      return;
+    }
+    if (currentPath !== "/") {
+      listBox.append(fileRow("📁 ..", () => loadDir(parentPath(currentPath)),
+        "双击进入上级目录", null));
+    }
+    for (const entry of entries) {
+      if (entry.type === "dir") {
+        listBox.append(fileRow(`📁 ${entry.name}`,
+          () => loadDir(joinPath(currentPath, entry.name)),
+          "双击进入", null));
+      } else {
+        // 单击选择文件作为日志路径
+        listBox.append(fileRow(`📄 ${entry.name}`, null, "点击选择", () => {
+          pathInput.value = joinPath(currentPath, entry.name);
+          listBox.querySelectorAll(".file-item").forEach(r =>
+            r.classList.remove("selected"));
+        }));
+      }
+    }
+  }
+
+  function fileRow(label, onDouble, title, onSelect) {
+    const row = el("div", { class: "file-item", title }, el("span", {}, label));
+    if (onDouble) row.addEventListener("dblclick", onDouble);
+    if (onSelect) {
+      row.addEventListener("click", () => {
+        onSelect();
+        row.classList.add("selected");
+      });
+    }
+    return row;
+  }
+
+  async function doGrep() {
+    const body = { mode };
+    if (mode !== "host") {
+      body.container = containerSelect.value;
+      if (!body.container) {
+        statusEl.textContent = "请先选择引擎容器";
+        statusEl.className = "inline-msg warn";
+        return;
+      }
+    }
+    if (mode !== "docker_logs") {
+      body.path = pathInput.value.trim();
+      if (!body.path) {
+        statusEl.textContent = "请先填写/选择日志文件路径";
+        statusEl.className = "inline-msg warn";
+        return;
+      }
+    }
+
+    grepBtn.disabled = true;
+    grepBtn.textContent = "筛选中...";
+    statusEl.textContent = "";
+    try {
+      const data = await api.post("/api/platform/engine/grep", body);
+      cmdRow.textContent = data.command || "";
+      resultPre.textContent = data.output || data.error || "(无输出)";
+      parsed = data.parsed ? { kv: data.kv, max_len: data.max_len } : null;
+      if (data.parsed) {
+        const parts = [];
+        if (data.kv !== null && data.kv !== undefined) {
+          parts.push(`单个DP组KV cache = ${data.kv.toLocaleString()} tokens`);
+        }
+        if (data.max_len !== null && data.max_len !== undefined) {
+          parts.push(`最大请求长度 = ${data.max_len.toLocaleString()} tokens`);
+        }
+        parsedEl.textContent = "✓ " + parts.join("  |  ");
+        parsedEl.className = "inline-msg ok";
+        statusEl.textContent = "筛选完成, 可填入参数";
+        statusEl.className = "inline-msg ok";
+        fillBtn.disabled = false;
+      } else {
+        parsedEl.textContent = "未解析到 KV cache / 最大上下文数值";
+        parsedEl.className = "inline-msg warn";
+        statusEl.textContent = data.error
+          ? `筛选失败: ${data.error}` : "请确认选择的是 vLLM 启动日志";
+        statusEl.className = "inline-msg warn";
+        fillBtn.disabled = true;
+      }
+    } catch (err) {
+      statusEl.textContent = `筛选失败: ${err.message}`;
+      statusEl.className = "inline-msg error";
+      fillBtn.disabled = true;
+    } finally {
+      grepBtn.disabled = false;
+      grepBtn.textContent = "🔍 筛选 KV cache";
+    }
+  }
+  grepBtn.addEventListener("click", doGrep);
+
+  function fillParams() {
+    if (!parsed) return;
+    const filled = [];
+    if (parsed.kv !== null && parsed.kv !== undefined) {
+      $("#kvCache").value = parsed.kv;
+      filled.push(`单个DP组KV cache=${parsed.kv.toLocaleString()}`);
+    }
+    if (parsed.max_len !== null && parsed.max_len !== undefined) {
+      $("#kvMaxLen").value = parsed.max_len;
+      filled.push(`最大请求长度=${parsed.max_len.toLocaleString()}`);
+    }
+    // 最大上下文变化会影响长度选择栏的可用项, 立即重渲染
+    renderLengthChips();
+    m.close();
+    toast(`已填入: ${filled.join("; ")}`, "success", 4000);
+  }
+  const fillBtn = el("button", { class: "btn btn-primary", type: "button" },
+    "✓ 填入参数");
+  fillBtn.disabled = true;
+  fillBtn.addEventListener("click", fillParams);
+
+  m.body.append(modeRow, containerRow, pathRow, listBox, actionRow, mapHint,
+    cmdRow, resultPre, parsedEl);
+  m.footer.append(
+    el("button", { class: "btn btn-outline", onclick: m.close }, "取消"),
+    fillBtn);
+
+  updateModeUI();
+  return m;
+}
+
 
 function loadPresets() {
   const p = (async () => {
