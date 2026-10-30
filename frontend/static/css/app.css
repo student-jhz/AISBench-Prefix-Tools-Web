@@ -1,4 +1,9 @@
 /* AISBench Prefix Tools Web - 全局样式 */
+/* hidden 属性必须压过任何 display 声明(flex/grid 等):
+   否则 JS 设置 element.hidden 后元素仍然可见(v3.0.2 引擎日志
+   弹窗的模式切换行曾被 .form-actions{display:flex} 覆盖) */
+[hidden] { display: none !important; }
+
 :root {
   --primary: #2563eb;
   --primary-dark: #1d4ed8;
