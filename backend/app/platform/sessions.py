@@ -28,6 +28,10 @@ class UserSession:
     port: int
     ssh: SSHManager
     created_at: str
+    # 引擎日志获取的“其他服务器”临时连接(可选):
+    # vLLM 引擎不一定部署在当前登录的执行机上, 用户可临时连接日志
+    # 所在服务器; 该连接挂在会话上, 多用户互不干扰。
+    engine_ssh: Optional[SSHManager] = None
 
     def to_dict(self) -> dict:
         return {
@@ -36,6 +40,17 @@ class UserSession:
             "host": self.host,
             "port": self.port,
             "created_at": self.created_at,
+        }
+
+    def engine_other_status(self) -> dict:
+        """其他服务器连接状态(未连接时字段为空)"""
+        ssh = self.engine_ssh
+        connected = bool(ssh and ssh.connected)
+        return {
+            "connected": connected,
+            "host": ssh.host if connected else "",
+            "port": ssh.port if connected else 0,
+            "username": ssh.username if connected else "",
         }
 
 
@@ -96,6 +111,54 @@ class SessionRegistry:
             session.ssh.disconnect()
         except Exception:  # noqa: BLE001
             pass
+        try:
+            if session.engine_ssh:
+                session.engine_ssh.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+        return True
+
+    # ------------------------------------------------------------ 其他服务器(引擎日志)
+
+    def engine_other_connect(self, token: str, host: str, port: int,
+                             username: str, password: str = None,
+                             key_path: str = None,
+                             timeout: int = 10) -> UserSession:
+        """为该会话建立“其他服务器”临时连接; 认证失败抛 RuntimeError"""
+        session = self.get(token)
+        if not session:
+            raise RuntimeError("未登录或会话已失效")
+        ssh = self.state.ssh_factory()
+        ok, msg = ssh.connect(host, int(port), username,
+                              password=password, key_path=key_path,
+                              timeout=timeout)
+        if not ok:
+            try:
+                ssh.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(msg or "连接失败, 请检查主机/端口/用户名/密码")
+        old = session.engine_ssh
+        session.engine_ssh = ssh
+        if old:
+            try:
+                old.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+        return session
+
+    def engine_other_disconnect(self, token: str) -> bool:
+        """断开该会话的其他服务器连接"""
+        session = self.get(token)
+        if not session:
+            return False
+        ssh = session.engine_ssh
+        session.engine_ssh = None
+        if ssh:
+            try:
+                ssh.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
         return True
 
     def active(self) -> List[UserSession]:

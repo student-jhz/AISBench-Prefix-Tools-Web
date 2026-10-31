@@ -156,9 +156,20 @@ class LogtoolsViewRequest(LogtoolsGrepRequest):
 
 class EngineGrepRequest(BaseModel):
     """从 vLLM 引擎日志筛选 KV cache / 最大上下文(平台会话版)"""
+    server: str = Field(default="session", pattern="^(session|other)$")
     mode: str = Field(pattern="^(host|container|docker_logs)$")
     path: Optional[str] = None
     container: Optional[str] = None
+
+
+class EngineOtherConnectRequest(BaseModel):
+    """连接其他服务器(引擎日志所在机器, 与当前执行机不同)"""
+    host: str = Field(min_length=1)
+    port: int = Field(default=22, ge=1, le=65535)
+    username: str = Field(min_length=1)
+    password: Optional[str] = None
+    key_upload_id: Optional[str] = None
+    timeout: int = Field(default=10, ge=1, le=120)
 
 
 # ------------------------------------------------------------ 结果对比

@@ -1,6 +1,6 @@
 /** 新建测试任务 —— 选镜像 + 配置 + 用例设计 + 提交(容器由平台自动管理) */
 
-import { $, $$, el, fmtLen, setMsg, toast, modal } from "./util.js";
+import { $, $$, el, fmtLen, setMsg, toast, modal, copyText } from "./util.js";
 import { api } from "./api.js";
 import { G, saveDesigner, showView } from "./state.js";
 
@@ -266,10 +266,152 @@ function initDesigner() {
  */
 function showEngineKvModal() {
   let mode = "host";
+  let server = "session";   // "session"=当前登录执行机 | "other"=用户指定的其他服务器
   let currentPath = "/";
   let parsed = null;        // {kv, max_len}
+  let otherConnected = null;   // 其他服务器连接状态 {connected, host, port, username}
+  let keyUploadId = null;      // 其他服务器密钥上传 ID
 
   const m = modal({ title: "从引擎日志获取 KV cache / 最大请求长度", large: true });
+
+  // ---- 日志所在服务器选择 ----
+  // vLLM 引擎不一定部署在当前登录的执行机上, 允许临时连接其他服务器
+  const serverOptions = [
+    ["session", "当前登录的执行机"],
+    ["other", "其他服务器"],
+  ];
+  const serverRadios = serverOptions.map(([value, label]) => {
+    const input = el("input", { type: "radio", name: "engineLogServer", value });
+    input.checked = value === server;
+    input.addEventListener("change", () => {
+      if (!input.checked) return;
+      server = value;
+      updateServerUI();
+    });
+    return el("label", { class: "checkbox-inline" }, input, el("span", {}, label));
+  });
+  const serverRow = el("div", { class: "form-actions", style: "margin-bottom:10px" },
+    el("span", { class: "hint-text" }, "日志所在服务器:"),
+    ...serverRadios);
+
+  // ---- 其他服务器连接(密码或密钥, 挂在当前用户会话上) ----
+  const otherHost = el("input", { type: "text", placeholder: "如 10.0.0.2" });
+  const otherPort = el("input", { type: "number", value: "22", min: "1", max: "65535" });
+  const otherUser = el("input", { type: "text", placeholder: "root" });
+  const otherPassword = el("input", { type: "password", placeholder: "密码(与密钥二选一)" });
+  const keyFileInput = el("input", { type: "file", style: "display:none" });
+  const keyPickBtn = el("button", {
+    class: "btn btn-outline btn-sm", type: "button",
+    onclick: () => keyFileInput.click(),
+  }, "🔑 密钥文件");
+  const keyNameEl = el("span", { class: "hint-text" }, "未选择密钥");
+  keyFileInput.addEventListener("change", async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    keyNameEl.textContent = `${file.name} (上传中...)`;
+    try {
+      const data = await api.upload("/api/upload/ssh-key", file);
+      keyUploadId = data.id;
+      keyNameEl.textContent = file.name;
+    } catch (err) {
+      keyUploadId = null;
+      keyNameEl.textContent = `上传失败: ${err.message}`;
+    }
+    e.target.value = "";
+  });
+  const connectBtn = el("button", { class: "btn btn-primary btn-sm", type: "button" },
+    "连接");
+  const otherStatusEl = el("span", { class: "inline-msg muted" });
+  const otherFormRow = el("div", { class: "form-grid" },
+    el("div", { class: "form-item" }, el("label", {}, "主机"), otherHost),
+    el("div", { class: "form-item" }, el("label", {}, "端口"), otherPort),
+    el("div", { class: "form-item" }, el("label", {}, "用户名"), otherUser),
+    el("div", { class: "form-item" }, el("label", {}, "密码"), otherPassword),
+    el("div", { class: "form-item" }, el("label", {}, "密钥"),
+      el("div", { class: "form-actions", style: "margin:0" }, keyPickBtn, keyNameEl)),
+  );
+  const disconnectBtn = el("button", {
+    class: "btn btn-outline btn-sm", type: "button", onclick: disconnectOther,
+  }, "断开");
+  const otherActionsRow = el("div", { class: "form-actions", style: "margin-bottom:4px" },
+    connectBtn, disconnectBtn, otherStatusEl, keyFileInput);
+  const otherServerBox = el("div", {
+    class: "advanced-box", style: "margin-bottom:10px;padding:10px",
+  }, otherFormRow, otherActionsRow);
+
+  async function refreshOtherStatus() {
+    try {
+      otherConnected = await api.get("/api/platform/engine/other/status",
+        { silent: true });
+    } catch {
+      otherConnected = { connected: false };
+    }
+    renderOtherStatus();
+  }
+
+  function renderOtherStatus() {
+    const on = !!(otherConnected && otherConnected.connected);
+    const creds = [otherHost, otherPort, otherUser, otherPassword, keyPickBtn];
+    creds.forEach(i => { i.disabled = on; });
+    connectBtn.hidden = on;
+    disconnectBtn.hidden = !on;
+    otherStatusEl.textContent = on
+      ? `✓ 已连接 ${otherConnected.username}@${otherConnected.host}:${otherConnected.port}`
+      : "未连接";
+    otherStatusEl.className = on ? "inline-msg ok" : "inline-msg muted";
+  }
+
+  async function connectOther() {
+    const host = otherHost.value.trim();
+    const username = otherUser.value.trim();
+    if (!host || !username) {
+      otherStatusEl.textContent = "请填写主机与用户名";
+      otherStatusEl.className = "inline-msg warn";
+      return;
+    }
+    const body = {
+      host, port: Number(otherPort.value) || 22, username,
+      password: otherPassword.value || undefined,
+      key_upload_id: keyUploadId || undefined,
+    };
+    if (!body.password && !body.key_upload_id) {
+      otherStatusEl.textContent = "请填写密码或上传密钥文件";
+      otherStatusEl.className = "inline-msg warn";
+      return;
+    }
+    connectBtn.disabled = true;
+    connectBtn.textContent = "连接中...";
+    try {
+      const data = await api.post("/api/platform/engine/other/connect", body);
+      otherConnected = data.status;
+      renderOtherStatus();
+      toast(data.message, "success");
+      containerSelect.innerHTML = "";   // 换机器后重新加载容器列表
+      loadContainers(true);
+      if (mode !== "docker_logs") loadDir(currentPath);
+    } catch (err) {
+      otherStatusEl.textContent = `连接失败: ${err.message}`;
+      otherStatusEl.className = "inline-msg error";
+    } finally {
+      connectBtn.disabled = false;
+      connectBtn.textContent = "连接";
+    }
+  }
+  connectBtn.addEventListener("click", connectOther);
+
+  async function disconnectOther() {
+    try {
+      const data = await api.post("/api/platform/engine/other/disconnect");
+      otherConnected = data.status;
+    } catch {
+      otherConnected = { connected: false };
+    }
+    renderOtherStatus();
+    containerSelect.innerHTML = "";
+    parsed = null;
+    parsedEl.textContent = "";
+    fillBtn.disabled = true;
+  }
 
   // ---- 来源选择 ----
   const modeOptions = [
@@ -292,6 +434,7 @@ function showEngineKvModal() {
 
   // ---- 容器选择(container/docker_logs 模式) ----
   const containerSelect = el("select", { style: "flex:1;min-width:220px" });
+  containerSelect.addEventListener("change", updateCommandPreview);
   const refreshContainersBtn = el("button", {
     class: "btn btn-outline btn-sm", type: "button",
     onclick: () => loadContainers(true),
@@ -303,6 +446,7 @@ function showEngineKvModal() {
 
   // ---- 日志路径(host/container 模式) ----
   const pathInput = el("input", { type: "text", value: currentPath, style: "flex:1" });
+  pathInput.addEventListener("input", updateCommandPreview);
   const goBtn = el("button", {
     class: "btn btn-outline btn-sm", type: "button",
     onclick: () => loadDir(pathInput.value.trim() || "/"),
@@ -326,7 +470,20 @@ function showEngineKvModal() {
   const actionRow = el("div", { class: "form-actions", style: "margin-bottom:10px" },
     grepBtn, statusEl);
 
-  const cmdRow = el("div", { class: "command-display", style: "margin-bottom:8px" });
+  // ---- 命令预览与复制(日志不在服务器上时, 用户可复制命令自行执行) ----
+  const GREP = "grep -e 'GPU KV cache size' -e 'Maximum concurrency'";
+  const GENERIC_CMD = `cat vllm_serve.log | ${GREP}`;
+  const cmdText = el("span", { style: "flex:1" });
+  const copyCmdBtn = el("button", {
+    class: "btn btn-outline btn-sm", type: "button",
+    onclick: () => copyText(cmdText.textContent),
+  }, "⧉ 复制命令");
+  const cmdRow = el("div", {
+    class: "command-display",
+    style: "margin-bottom:4px;display:flex;align-items:center;gap:8px",
+  }, cmdText, copyCmdBtn);
+  const cmdHint = el("div", { class: "hint-text", style: "margin-bottom:8px" },
+    "日志不在服务器上? 复制命令到日志所在的机器执行, 把输出粘贴到下方解析");
   const resultPre = el("pre", {
     class: "log-console", style: "height:140px;margin-bottom:8px",
   }, "(点击「筛选 KV cache」后显示结果)");
@@ -334,23 +491,108 @@ function showEngineKvModal() {
   const mapHint = el("div", { class: "hint-text", style: "margin-bottom:8px" },
     "GPU KV cache size → 单个DP组KV cache；Maximum concurrency → 最大请求长度");
 
+  // ---- 粘贴 grep 输出解析(命令在别处执行后的回填通道) ----
+  const pasteInput = el("textarea", {
+    rows: "3", style: "width:100%;font-family:var(--mono);font-size:12px",
+    placeholder: "把在别处执行的 grep 输出粘贴到这里, 例如:\n"
+      + "GPU KV cache size: 198,469 tokens\n"
+      + "Maximum concurrency for 131,072 tokens per request: 3.84x",
+  });
+  const parsePasteBtn = el("button", {
+    class: "btn btn-outline btn-sm", type: "button",
+    onclick: parsePastedOutput,
+  }, "📋 解析粘贴的输出");
+  const pasteBox = el("details", { class: "advanced-box", style: "margin-bottom:8px" },
+    el("summary", {}, "日志在别处? 粘贴 grep 输出解析"),
+    el("div", { style: "margin-top:8px" },
+      pasteInput,
+      el("div", { class: "form-actions", style: "margin-top:6px" }, parsePasteBtn)));
+
   function updateModeUI() {
     containerRow.hidden = mode === "host";
     pathRow.hidden = mode === "docker_logs";
     listBox.hidden = mode === "docker_logs";
-    if (mode !== "host") loadContainers();
-    else if (!listBox.children.length) loadDir("/");
     parsed = null;
     parsedEl.textContent = "";
     fillBtn.disabled = true;
+    if (mode !== "host") loadContainers();
+    else if (!listBox.children.length) loadDir("/");
+    updateCommandPreview();
+  }
+
+  function updateServerUI() {
+    otherServerBox.hidden = server === "session";
+    // 换了机器: 容器列表与目录内容全部失效, 需重新加载
+    containerSelect.innerHTML = "";
+    listBox.innerHTML = "";
+    parsed = null;
+    parsedEl.textContent = "";
+    fillBtn.disabled = true;
+    if (server === "other") refreshOtherStatus();
+    updateModeUI();
+  }
+
+  /** POSIX shell 引用(与后端 shlex.quote 行为一致) */
+  function shellQuote(value) {
+    const s = String(value ?? "");
+    if (s === "") return "''";
+    if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s)) return s;
+    return `'${s.replace(/'/g, "'\\''")}'`;
+  }
+
+  /** 按当前选择构造 grep 命令(与服务端 build_grep_command 一致) */
+  function buildCommand() {
+    if (mode === "docker_logs") {
+      const c = containerSelect.value;
+      return c ? `docker logs ${shellQuote(c)} 2>&1 | ${GREP}` : "";
+    }
+    const p = pathInput.value.trim();
+    if (mode === "container") {
+      const c = containerSelect.value;
+      return (c && p) ? `docker exec ${shellQuote(c)} ${GREP} ${shellQuote(p)}` : "";
+    }
+    return p ? `${GREP} ${shellQuote(p)}` : "";
+  }
+
+  function updateCommandPreview() {
+    cmdText.textContent = buildCommand() || GENERIC_CMD;
+  }
+
+  /** 解析用户粘贴的 grep 输出(与后端 parse_kv_results 相同的正则) */
+  function parsePastedOutput() {
+    const text = pasteInput.value || "";
+    const kvMatch = text.match(/GPU KV cache size:?\s*([\d,]+)\s*tokens/);
+    const maxMatch = text.match(/Maximum concurrency for ([\d,]+) tokens per request/);
+    const kv = kvMatch ? Number(kvMatch[1].replace(/,/g, "")) : null;
+    const maxLen = maxMatch ? Number(maxMatch[1].replace(/,/g, "")) : null;
+    if (kv === null && maxLen === null) {
+      parsed = null;
+      parsedEl.textContent = "粘贴内容中未找到 KV cache / 最大上下文数值";
+      parsedEl.className = "inline-msg warn";
+      fillBtn.disabled = true;
+      return;
+    }
+    parsed = { kv, max_len: maxLen };
+    const parts = [];
+    if (kv !== null) parts.push(`单个DP组KV cache = ${kv.toLocaleString()} tokens`);
+    if (maxLen !== null) parts.push(`最大请求长度 = ${maxLen.toLocaleString()} tokens`);
+    parsedEl.textContent = "✓ " + parts.join("  |  ");
+    parsedEl.className = "inline-msg ok";
+    fillBtn.disabled = false;
   }
 
   async function loadContainers(force = false) {
     if (containerSelect.options.length && !force) return;
+    if (server === "other" && !(otherConnected && otherConnected.connected)) {
+      statusEl.textContent = "请先连接其他服务器";
+      statusEl.className = "inline-msg warn";
+      return;
+    }
     statusEl.textContent = "加载容器列表...";
     statusEl.className = "inline-msg warn";
     try {
-      const data = await api.get("/api/platform/engine/containers");
+      const data = await api.get(
+        `/api/platform/engine/containers?server=${server}`);
       containerSelect.innerHTML = "";
       const items = data.containers || [];
       if (!items.length) {
@@ -372,9 +614,16 @@ function showEngineKvModal() {
   async function loadDir(path) {
     currentPath = (path || "/").replace(/\/+$/, "") || "/";
     pathInput.value = currentPath;
+    updateCommandPreview();
+    if (server === "other" && !(otherConnected && otherConnected.connected)) {
+      listBox.innerHTML = "";
+      statusEl.textContent = "请先连接其他服务器";
+      statusEl.className = "inline-msg warn";
+      return;
+    }
     listBox.innerHTML = `<div class="file-list-empty">加载中...</div>`;
     try {
-      const params = new URLSearchParams({ mode, path: currentPath });
+      const params = new URLSearchParams({ server, mode, path: currentPath });
       if (mode === "container") params.set("container", containerSelect.value);
       const data = await api.get(`/api/platform/engine/list?${params}`);
       renderDir(data.entries || []);
@@ -406,6 +655,7 @@ function showEngineKvModal() {
         // 单击选择文件作为日志路径
         listBox.append(fileRow(`📄 ${entry.name}`, null, "点击选择", () => {
           pathInput.value = joinPath(currentPath, entry.name);
+          updateCommandPreview();
           listBox.querySelectorAll(".file-item").forEach(r =>
             r.classList.remove("selected"));
         }));
@@ -426,7 +676,7 @@ function showEngineKvModal() {
   }
 
   async function doGrep() {
-    const body = { mode };
+    const body = { mode, server };
     if (mode !== "host") {
       body.container = containerSelect.value;
       if (!body.container) {
@@ -449,7 +699,7 @@ function showEngineKvModal() {
     statusEl.textContent = "";
     try {
       const data = await api.post("/api/platform/engine/grep", body);
-      cmdRow.textContent = data.command || "";
+      if (data.command) cmdText.textContent = data.command;
       resultPre.textContent = data.output || data.error || "(无输出)";
       parsed = data.parsed ? { kv: data.kv, max_len: data.max_len } : null;
       if (data.parsed) {
@@ -505,12 +755,13 @@ function showEngineKvModal() {
   fillBtn.disabled = true;
   fillBtn.addEventListener("click", fillParams);
 
-  m.body.append(modeRow, containerRow, pathRow, listBox, actionRow, mapHint,
-    cmdRow, resultPre, parsedEl);
+  m.body.append(serverRow, otherServerBox, modeRow, containerRow, pathRow,
+    listBox, actionRow, mapHint, cmdRow, cmdHint, resultPre, pasteBox, parsedEl);
   m.footer.append(
     el("button", { class: "btn btn-outline", onclick: m.close }, "取消"),
     fillBtn);
 
+  otherServerBox.hidden = true;
   updateModeUI();
   return m;
 }

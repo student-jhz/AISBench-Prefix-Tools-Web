@@ -13,7 +13,12 @@ from ..core.docker_manager import DockerManager
 from ..core.ssh_manager import RemoteFSError
 from ..core.test_designer import TestDesigner
 from ..platform.sessions import UserSession
-from ..schemas import EngineGrepRequest, PlatformTaskCreateRequest
+from ..platform.sessions import resolve_key_path
+from ..schemas import (
+    EngineGrepRequest,
+    EngineOtherConnectRequest,
+    PlatformTaskCreateRequest,
+)
 from ..state import AppState
 from .auth import require_session
 from .deps import get_state
@@ -162,30 +167,93 @@ def list_remote_dir(path: str = "/",
 # (方法迁移自桌面版 AISBench-Prefix-Tools 的日志工具, 三种日志来源)
 # ------------------------------------------------------------
 
+def _engine_ssh(session: UserSession, server: str = "session"):
+    """解析日志来源服务器: 当前执行机 或 用户临时连接的其他服务器
+
+    vLLM 引擎不一定部署在当前登录的执行机上 —— 引擎日志可能在另一台
+    机器; 用户通过 /engine/other/connect 建立自己的临时连接。
+    """
+    if server == "other":
+        ssh = session.engine_ssh
+        if not ssh or not ssh.connected:
+            raise HTTPException(400, "请先连接其他服务器")
+        return ssh
+    return session.ssh
+
+
+@router.post("/engine/other/connect")
+def engine_other_connect(req: EngineOtherConnectRequest,
+                         state: AppState = Depends(get_state),
+                         session: UserSession = Depends(require_session)):
+    """连接其他服务器(引擎日志所在机器)
+
+    连接挂在该用户会话上(多用户互不干扰); 密码或密钥二选一,
+    密钥复用登录密钥的上传通道(/api/upload/ssh-key)。
+    """
+    if not (req.password or req.key_upload_id):
+        raise HTTPException(400, "请填写密码或上传密钥文件")
+    key_path = resolve_key_path(state.uploads_dir, req.key_upload_id or "")
+    if req.key_upload_id and not key_path:
+        raise HTTPException(400, "密钥文件不存在或已失效, 请重新上传")
+    try:
+        state.sessions.engine_other_connect(
+            session.token, req.host, req.port, req.username,
+            password=req.password, key_path=key_path,
+            timeout=req.timeout)
+    except RuntimeError as e:
+        raise HTTPException(400, str(e)) from e
+    return {
+        "ok": True,
+        "message": f"已连接 {req.host}:{req.port}",
+        "status": session.engine_other_status(),
+    }
+
+
+@router.post("/engine/other/disconnect")
+def engine_other_disconnect(session: UserSession = Depends(require_session),
+                             state: AppState = Depends(get_state)):
+    """断开其他服务器连接"""
+    state.sessions.engine_other_disconnect(session.token)
+    return {"ok": True, "status": session.engine_other_status()}
+
+
+@router.get("/engine/other/status")
+def engine_other_status(session: UserSession = Depends(require_session)):
+    """其他服务器连接状态(打开弹窗时回显)"""
+    return session.engine_other_status()
+
+
 @router.get("/engine/containers")
-def engine_containers(state: AppState = Depends(get_state),
+def engine_containers(server: str = "session",
+                      state: AppState = Depends(get_state),
                       session: UserSession = Depends(require_session)):
     """列出执行机上运行中的容器(定位 vLLM 引擎日志用)
 
     这里列出的是用户/运维自行启动的推理服务容器, 不是平台自动创建的
     测试执行容器 —— 后者对用户始终不可见。
     """
+    if server not in ("session", "other"):
+        raise HTTPException(400, "server 仅支持 session/other")
     try:
-        items = kvt.list_containers(session.ssh)
+        items = kvt.list_containers(_engine_ssh(session, server))
     except RuntimeError as e:
         raise HTTPException(400, str(e)) from e
     return {"containers": items}
 
 
 @router.get("/engine/list")
-def engine_list(mode: str = "host", path: str = "/",
+def engine_list(server: str = "session", mode: str = "host", path: str = "/",
                 container: str = "",
+                state: AppState = Depends(get_state),
                 session: UserSession = Depends(require_session)):
     """浏览引擎日志所在目录(host=SFTP / container=docker exec ls)"""
+    if server not in ("session", "other"):
+        raise HTTPException(400, "server 仅支持 session/other")
     if mode not in ("host", "container"):
         raise HTTPException(400, "mode 仅支持 host/container")
     try:
-        entries = kvt.list_dir(session.ssh, mode, path, container or None)
+        entries = kvt.list_dir(_engine_ssh(session, server), mode, path,
+                               container or None)
     except RemoteFSError as e:
         raise HTTPException(400, str(e)) from e
     except RuntimeError as e:
@@ -208,7 +276,7 @@ def engine_grep(req: EngineGrepRequest,
     if cmd is None:
         raise HTTPException(400, "无法生成筛选命令, 请检查容器/文件选择")
 
-    code, out, err = session.ssh.execute(cmd, timeout=180)
+    code, out, err = _engine_ssh(session, req.server).execute(cmd, timeout=180)
     result = {
         "command": cmd,
         "code": code,

@@ -468,6 +468,186 @@ class TestEngineParams:
                    json={"mode": "host"})
         assert r.status_code == 400
 
+    @staticmethod
+    def _client_with_ssh_factory(tmp_path):
+        """构建 ssh_factory 逐次创建独立 FakeSSH 的应用
+        (主登录与「其他服务器」连接各自拿到独立连接, 便于区分路由)"""
+        created = []
+        app = create_app(ssh_manager=FakeSSH(), data_dir=tmp_path,
+                         ssh_factory=lambda: created.append(FakeSSH())
+                         or created[-1])
+        return TestClient(app), created
+
+    def test_other_server_connect_grep_disconnect(self, tmp_path):
+        """引擎日志在另一台服务器: 连接 → grep/容器/目录路由到该连接 → 断开"""
+        c, created = self._client_with_ssh_factory(tmp_path)
+        r = c.post("/api/auth/login", json={
+            "host": "10.0.0.1", "port": 22, "username": "root",
+            "password": "pass"})
+        headers = {"Authorization": f"Bearer {r.json()['token']}"}
+
+        # 未连接 other → 明确 400 而非误用当前执行机
+        r = c.post("/api/platform/engine/grep", headers=headers,
+                   json={"server": "other", "mode": "host",
+                         "path": "/root/vllm_serve.log"})
+        assert r.status_code == 400
+        assert "请先连接其他服务器" in r.json()["detail"]
+
+        # 连接其他服务器(独立 SSH 实例)
+        r = c.post("/api/platform/engine/other/connect", headers=headers,
+                   json={"host": "10.0.0.2", "port": 22,
+                         "username": "root", "password": "pass"})
+        assert r.status_code == 200, r.text
+        assert r.json()["status"]["connected"] is True
+        other = created[1]
+        assert other.host == "10.0.0.2"
+
+        # 日志只存在于其他服务器: server=other 解析成功, session 无匹配
+        other.files["/root/vllm_serve.log"] = SAMPLE_VLLM_LOG
+        r = c.post("/api/platform/engine/grep", headers=headers,
+                   json={"server": "other", "mode": "host",
+                         "path": "/root/vllm_serve.log"})
+        assert r.status_code == 200, r.text
+        assert r.json()["kv"] == 198469
+        assert r.json()["max_len"] == 131072
+        r = c.post("/api/platform/engine/grep", headers=headers,
+                   json={"server": "session", "mode": "host",
+                         "path": "/root/vllm_serve.log"})
+        assert r.json()["parsed"] is False
+
+        # 容器列表 / 目录浏览同样路由到其他服务器
+        other.containers["vllm_on_other"] = "Up 1 hour"
+        r = c.get("/api/platform/engine/containers",
+                  params={"server": "other"}, headers=headers)
+        assert [i["name"] for i in r.json()["containers"]] == ["vllm_on_other"]
+        r = c.get("/api/platform/engine/list",
+                  params={"server": "other", "mode": "host", "path": "/root"},
+                  headers=headers)
+        assert "vllm_serve.log" in [e["name"] for e in r.json()["entries"]]
+
+        # 状态查询
+        r = c.get("/api/platform/engine/other/status", headers=headers)
+        assert r.json() == {"connected": True, "host": "10.0.0.2",
+                            "port": 22, "username": "root"}
+
+        # 断开 → 再 grep 回到 400
+        r = c.post("/api/platform/engine/other/disconnect", headers=headers)
+        assert r.json()["ok"] is True
+        assert r.json()["status"]["connected"] is False
+        r = c.post("/api/platform/engine/grep", headers=headers,
+                   json={"server": "other", "mode": "host",
+                         "path": "/root/vllm_serve.log"})
+        assert r.status_code == 400
+
+    def test_other_server_bad_password(self, tmp_path):
+        c, _ = self._client_with_ssh_factory(tmp_path)
+        r = c.post("/api/auth/login", json={
+            "host": "10.0.0.1", "port": 22, "username": "root",
+            "password": "pass"})
+        headers = {"Authorization": f"Bearer {r.json()['token']}"}
+        r = c.post("/api/platform/engine/other/connect", headers=headers,
+                   json={"host": "10.0.0.2", "port": 22,
+                         "username": "root", "password": "wrong"})
+        assert r.status_code == 400
+        assert "认证失败" in r.json()["detail"]
+
+    def test_other_server_key_auth(self, tmp_path):
+        """密钥登录其他服务器(复用 /api/upload/ssh-key 上传通道)"""
+        c, created = self._client_with_ssh_factory(tmp_path)
+        uploads = tmp_path / "uploads"
+        uploads.mkdir(exist_ok=True)
+        (uploads / "20260101_key_test.pem").write_text("fake key")
+        r = c.post("/api/auth/login", json={
+            "host": "10.0.0.1", "port": 22, "username": "root",
+            "password": "pass"})
+        headers = {"Authorization": f"Bearer {r.json()['token']}"}
+        r = c.post("/api/platform/engine/other/connect", headers=headers,
+                   json={"host": "10.0.0.2", "username": "ops",
+                         "key_upload_id": "20260101_key_test.pem"})
+        assert r.status_code == 200, r.text
+        assert created[1].username == "ops"
+
+        # 不存在的密钥 ID → 400
+        r = c.post("/api/platform/engine/other/connect", headers=headers,
+                   json={"host": "10.0.0.2", "username": "ops",
+                         "key_upload_id": "missing.pem"})
+        assert r.status_code == 400
+        assert "密钥文件不存在" in r.json()["detail"]
+
+    def test_other_server_requires_credentials(self, tmp_path):
+        c, _ = self._client_with_ssh_factory(tmp_path)
+        r = c.post("/api/auth/login", json={
+            "host": "10.0.0.1", "port": 22, "username": "root",
+            "password": "pass"})
+        headers = {"Authorization": f"Bearer {r.json()['token']}"}
+        r = c.post("/api/platform/engine/other/connect", headers=headers,
+                   json={"host": "10.0.0.2", "username": "root"})
+        assert r.status_code == 400
+        assert "密码" in r.json()["detail"]
+
+    def test_other_server_multi_user_isolation(self, tmp_path):
+        """两个用户各自连接不同的其他服务器, grep 互不串扰"""
+        c, created = self._client_with_ssh_factory(tmp_path)
+        # 用户A / 用户B 各自登录(各创建一个主会话 SSH)
+        tokens = []
+        for i, host in enumerate(["10.0.0.1", "10.0.0.1"]):
+            r = c.post("/api/auth/login", json={
+                "host": host, "port": 22, "username": f"user{i}",
+                "password": "pass"})
+            tokens.append({"Authorization": f"Bearer {r.json()['token']}"})
+        # A → 10.0.1.1, B → 10.0.1.2
+        c.post("/api/platform/engine/other/connect", headers=tokens[0],
+               json={"host": "10.0.1.1", "username": "a", "password": "p"})
+        c.post("/api/platform/engine/other/connect", headers=tokens[1],
+               json={"host": "10.0.1.2", "username": "b", "password": "p"})
+        ssh_a, ssh_b = created[2], created[3]
+        ssh_a.files["/root/vllm.log"] = SAMPLE_VLLM_LOG.replace("198,469", "111,111")
+        ssh_b.files["/root/vllm.log"] = SAMPLE_VLLM_LOG.replace("198,469", "222,222")
+
+        r = c.post("/api/platform/engine/grep", headers=tokens[0],
+                   json={"server": "other", "mode": "host",
+                         "path": "/root/vllm.log"})
+        assert r.json()["kv"] == 111111
+        r = c.post("/api/platform/engine/grep", headers=tokens[1],
+                   json={"server": "other", "mode": "host",
+                         "path": "/root/vllm.log"})
+        assert r.json()["kv"] == 222222
+
+    def test_logout_disconnects_other_server(self, tmp_path):
+        """登出时同时断开该会话的其他服务器连接"""
+        c, created = self._client_with_ssh_factory(tmp_path)
+        r = c.post("/api/auth/login", json={
+            "host": "10.0.0.1", "port": 22, "username": "root",
+            "password": "pass"})
+        headers = {"Authorization": f"Bearer {r.json()['token']}"}
+        c.post("/api/platform/engine/other/connect", headers=headers,
+               json={"host": "10.0.0.2", "username": "root",
+                     "password": "pass"})
+        other = created[1]
+        assert other.connected is True
+        c.post("/api/auth/logout", headers=headers)
+        assert other.connected is False
+
+    def test_engine_other_requires_auth(self, pclient):
+        c, _, _ = pclient
+        assert c.get("/api/platform/engine/other/status").status_code == 401
+        r = c.post("/api/platform/engine/other/connect",
+                   json={"host": "x", "username": "root", "password": "p"})
+        assert r.status_code == 401
+
+    def test_engine_invalid_server_rejected(self, pclient):
+        c, _, _ = pclient
+        headers, _ = login(c)
+        r = c.get("/api/platform/engine/containers",
+                  params={"server": "bad"}, headers=headers)
+        assert r.status_code == 400
+        r = c.get("/api/platform/engine/list",
+                  params={"server": "bad"}, headers=headers)
+        assert r.status_code == 400
+        r = c.post("/api/platform/engine/grep", headers=headers,
+                   json={"server": "bad", "mode": "host", "path": "/x"})
+        assert r.status_code == 422   # pydantic pattern 校验
+
 
 class TestTaskStoreAtomicity:
     def test_concurrent_get_never_sees_partial_file(self, tmp_path):
