@@ -1,72 +1,76 @@
 # AISBench-Prefix-Tools-Web
 
-[AISBench-Prefix-Tools](https://github.com/ucm-system/AISBench-Prefix-Tools) 的网页版（Web Edition）：**部署在单台执行机上的多用户测试任务平台**。测试人员用浏览器登录执行机，发布 Prefix Cache 测试任务、跟踪执行进度、对比结果数据——全程无需接触容器等底层概念。
-
-> 🚀 **v3.0 交互理念升级**：登录执行机前只有登录界面；登录后进入任务平台，看到执行机上的测试任务情况。用户只需配置镜像、测试配置与参数，执行环境（容器）由平台自动创建与回收，结果数据保留在服务端供随时对比。
+**AISBench Prefix Cache 性能测试的多用户 Web 平台**。部署在单台执行机上，测试人员用浏览器登录执行机，即可发布 Prefix Cache 测试任务、跟踪执行进度、查看并对比结果数据。底层执行环境（Docker 容器）由平台自动准备与回收，用户全程无需接触容器等底层概念。
 
 > 📐 架构设计文档：[docs/DESIGN.md](docs/DESIGN.md)
+> 🧭 上游桌面版工具：[ucm-system/AISBench-Prefix-Tools](https://github.com/ucm-system/AISBench-Prefix-Tools)
 
-## 为什么要有 Web 版
+## 交互理念
 
-| | 桌面版 (Windows EXE) | Web 版 (本项目) |
-|---|---|---|
-| 部署形态 | 每台 Windows 电脑下载 EXE | 执行机上部署一个容器，团队浏览器访问 |
-| 访问方式 | 本机 GUI | `http://<执行机IP>:8320`，跨平台（Windows/macOS/Linux/平板） |
-| 分发升级 | 重新打包分发 EXE | `git pull && docker compose up -d --build` |
-| 依赖 | 无（打包内置） | 仅执行机需 Docker；浏览器零依赖、离线可用（无 CDN） |
-| 并发使用 | 单机单人 | 多用户共享执行机：各选各的 `aisbench_*` 容器，互不干扰（见下文"多用户使用理念"） |
-| 功能 | 6 步向导 + 日志工具 + 结果对比 | ✅ 全部保留，行为一致 |
+本工具定位为**单台执行机上的团队测试任务平台**：
+
+1. **登录门禁**：未登录执行机时，页面只是一个登录界面；用密码或密钥登录后，才进入任务平台。
+2. **任务即视角**：登录后看到的是执行机上的测试任务情况（排队 / 准备环境 / 执行测试 / 收集结果 / 完成 / 失败），而不是机器、容器、目录。
+3. **配置而非运维**：用户只需配置镜像、测试配置（模型名称 / 权重目录 / 服务 IP / Port）与测试用例；执行环境由平台按任务自动准备，任务结束后容器可回收。
+4. **结果留档**：每次测试的日志与结果 CSV 保存在服务端 `data/results/`，可随时在“结果对比分析”中跨任务比较，无需手动搬运文件。
 
 ## 功能清单
 
-### 任务平台（v3.0 核心交互）
+### 任务平台（浏览器界面）
 
-- [x] **登录门禁**：未登录执行机时只有登录界面；登录（密码/密钥）后进入任务平台，多用户各自持有会话互不干扰
-- [x] **任务列表**：登录后看到执行机上的全部测试任务（排队中/准备环境/执行测试/收集结果/已完成/失败），活动任务 2 秒自动轮询刷新
-- [x] **新建任务**：选择镜像 → 填写测试配置（模型名称/权重目录/服务 IP/Port，支持浏览执行机目录选择权重）→ 设计测试用例 → 提交；**容器概念完全不暴露**，执行环境由平台自动准备并回收
-- [x] **任务详情**：实时执行日志（按任务通道推送）、当前阶段、结果表、CSV/ZIP 下载
-- [x] **复制历史任务**：任务列表与详情页提供「复制」入口，一键将历史任务的镜像、测试配置、用例设计与勾选长度回填到新建任务表单，调整后即可提交新任务
-- [x] **结果保留**：任务结果存储在服务端 `data/results/`，可在结果对比分析中跨任务比较
+- [x] **登录门禁**：密码 / 密钥（.pem、id_rsa、ed25519 等）登录执行机；密码框支持显示 / 隐藏切换；多用户各自持有会话，互不干扰
+- [x] **任务列表**：登录后查看执行机上的全部测试任务与状态；活动任务每 2 秒自动轮询刷新
+- [x] **新建任务**：
+  - 选择镜像：直接列出执行机上已有镜像，按业务前缀分组聚焦
+  - 测试配置：模型名称 / 权重目录（可浏览执行机目录选择）/ 服务 IP / Port / API Key / 默认性能模式 / 输出目录 / Pod 信息等
+  - 测试用例设计：按 KV cache 信息计算并发数与请求数，输入 / 输出长度勾选（超出最大上下文自动禁用），用例增删改 / 复制 / 系数调整，低于最小请求数醒目警告
+  - **引擎参数自动获取**：从 vLLM 启动日志筛选 `GPU KV cache size` 与 `Maximum concurrency`，一键填入单个 DP 组 KV cache 与最大请求长度；支持宿主机文件 / 容器内文件 / `docker logs` 三种来源；日志在**其他服务器**上时可临时连接该服务器查找；日志暂不可访问时可**复制等价 grep 命令**自行执行，并把输出粘贴回页面解析
+  - 提交后由平台自动准备执行环境、生成 `run_tests.sh`、执行并解析结果
+- [x] **任务详情**：实时执行日志（按任务通道 WebSocket 推送，历史快照一次整屏展示，进度条原地折叠）、当前阶段、结果表（TTFT / TPOT / E2E / 吞吐 / 命中率等）、CSV / ZIP 下载
+- [x] **复制历史任务**：任务列表与详情页提供「复制」入口，一键回填历史任务的镜像、配置与用例设计，调整后提交新任务
+- [x] **结果对比分析**：结果历史按 run 选择（自动匹配可对比的 `results_*.csv`）或上传 CSV；按输入 / 输出长度自动匹配用例；21 项指标分组勾选；差异表（A/B/Δ/Δ%，正绿负红）+ A/B 同图分组柱状图 + 导出对比 CSV
+- [x] **会话持久化**：SSH 会话保存在服务端（服务重启自动重连执行机）；测试用例设计保存在浏览器本地，刷新不丢失
 
-### 兼容保留的五步向导 API（v2.0 容器资源池，供自动化/旧客户端）
+### 自动化 REST API（供脚本 / CI 集成）
 
-- [x] **步骤 1 · SSH 连接执行机**：密码 / 密钥（.pem、id_rsa、ed25519 等）登录，支持远程目录浏览，密码支持显示/隐藏切换（👁/🙈 图标与状态同步反馈）
-- [x] **步骤 2 · 准备测试容器**：
-  - **优先复用**：列出执行机上已有的 `aisbench_*` 容器，直接选择即可进入配置/测试流程（**创建容器不是必须的**）
-  - **Busy 感知**：列表实时显示每个容器是否正在执行测试（区分「本服务任务执行中」与「检测到他人测试进程」）；选择 busy 容器会收到拦截提示，建议另建新容器；busy 期间界面每 5 秒自动轮询，测试结束后提示自动消除
-  - **按需新建**：先从执行机已有镜像中选择（缺失才上传 tar / 指定远程 tar）→ 设置要挂载进容器的**模型父目录** → 自定义容器名（强制 `aisbench_` 前缀）→ 创建，全程 **WebSocket 实时日志**，支持取消
-- [x] **步骤 3 · 配置 config.py**：表单化编辑（模型名称 / 服务 IP / Port 等在**本步骤**配置）、实时预览生成内容、写入所选容器、**回读校验**一致性、一键读取容器当前配置
-  - **MODEL_PATH 从容器内目录浏览选择**（所选路径即容器内路径，直接生效，无需换算宿主机路径）
-- [x] **步骤 4 · 测试用例设计**：按 KV cache 信息计算并发数/请求数，输入/输出长度勾选（超上下文自动禁用），用例增删改/复制/系数调整，低于最小请求数醒目警告，计算明细与命令预览
-- [x] **步骤 5 · 执行测试**：选择执行容器（含 busy 提示）→ MODEL_PATH 预检查 → 生成 `run_tests.sh` → 容器内执行（实时日志）→ 自动下载日志 → 解析生成结果 CSV → 结果摘要表 + CSV/ZIP 下载 + 结果历史管理
-- [x] **环境清理**：**按容器名勾选删除**（绝不模糊匹配/批量删除；正在执行测试的容器自动跳过，避免误伤他人任务）+ 清理远程工作目录
+浏览器界面之外，后端同时暴露完整的分步 API，可脚本化驱动整个测试流程：
 
-### 多用户使用理念（v2.0）
+| 模块 | 端点 | 说明 |
+|------|------|------|
+| 系统 | `GET /api/health`、`GET /api/state` | 健康检查 / 会话状态 |
+| 认证 | `POST /api/auth/{login|logout}`、`GET /api/auth/status` | 任务平台登录门禁 |
+| SSH | `POST /api/ssh/{connect|disconnect}`、`GET /api/ssh/status` | 密码或密钥连接执行机 |
+| 远程浏览 | `GET /api/fs/list?path=` | SFTP 列目录 |
+| 上传 | `POST /api/upload/{image|code-zip|ssh-key|compare-csv}` | 镜像 tar / 代码 zip / 密钥 / 对比 CSV |
+| 容器池 | `GET /api/containers/{list|images|busy}`、`POST /api/containers/{select|start}` | 列出（含 busy 检测）/ 选择 / 启动容器 |
+| 容器内浏览 | `GET /api/containers/fs?name=&path=` | `docker exec ls` 浏览容器内目录 |
+| 部署 | `POST /api/deploy/{start|cancel}`、`GET /api/deploy/{status|preflight}` | 后台线程执行容器创建，WebSocket 实时日志 |
+| 配置 | `POST /api/config/{preview|save|verify|read}`、`GET /api/config/defaults` | 生成 / 写入 / 回读校验 `config.py` |
+| 用例 | `GET /api/designer/presets`、`POST /api/designer/{generate|cases|script}` | KV 参数 → 用例 / 命令 / 脚本 |
+| 执行 | `POST /api/execute/{start|cancel}`、`GET /api/execute/status?container=` | 预检查 → 执行 → 日志下载 → CSV 解析 |
+| 任务平台 | `GET /api/platform/tasks`、`GET /api/platform/tasks/{id}`、`POST /api/platform/tasks`、`POST /api/platform/tasks/{id}/cancel`、`GET /api/platform/tasks/{id}/copy-source`、`DELETE /api/platform/tasks/{id}` | 多用户任务发布 / 查询 / 取消 / 复制来源 / 删除 |
+| 引擎日志 | `POST /api/platform/engine/grep`、`GET /api/platform/engine/{containers|list}`、`POST /api/platform/engine/other/{connect|disconnect}`、`GET /api/platform/engine/other/status` | 当前执行机或**其他服务器**上筛选 vLLM KV cache 信息 |
+| 日志工具 | `POST /api/logtools/other/{connect|disconnect}`、`GET /api/logtools/{containers|list}`、`POST /api/logtools/{grep|view}` | 独立远程日志工具 |
+| 结果 | `GET /api/results`、`GET /api/results/{run}`、`GET .../download` | 结果历史与下载 |
+| 对比 | `POST /api/compare/{load|compute|export}` | 两份 CSV 匹配对比、导出 |
+| 清理 | `POST /api/cleanup` | **按显式勾选的容器名删除** + 清理远程工作目录 |
+| 实时日志 | `WS /ws/logs` | 按通道推送增量日志，连接时补发历史 |
 
-本工具部署在执行机上供团队多人通过浏览器使用，执行机上的 `aisbench_*` 容器构成一个**共享测试资源池**：
+### 容器执行状态检测原理
 
-- **容器即工作区**：每位用户可创建专属容器（名称自定义但保持 `aisbench_` 前缀，如 `aisbench_user1_vllm`），在容器内配置和执行自己的测试任务
-- **复用优先**：已有容器可直接选择进入测试流程，无需每次重新部署
-- **Busy 感知**：选择/执行前实时检测容器是否正在跑测试，busy 时建议新建容器，避免多人任务挤在同一容器互相干扰（检测原理见下文「容器执行状态检测原理」）
-- **安全边界**：仅识别和清理 `aisbench` 前缀容器；清理必须逐个勾选名称，其他容器（他人以其他命名规则创建的、或系统容器）一律拒绝操作
-
-### 容器执行状态检测原理（v2.0.5）
-
-「容器是否正在执行测试」由**两级数据源**共同判定，前端明确区分展示：
+「容器是否正在执行测试」由**两级数据源**共同判定：
 
 | 来源 | 实现 | 语义 | 特点 |
 |---|---|---|---|
-| **后台执行状态注册表**（权威） | 任务启动时在服务端写入 `data/exec_state.json`（内存 + 磁盘持久化），记录每个容器的 `status / phase / run_id / script_running / started_at / ended_at`；任务完成/失败/取消时立即迁移出 `running` | 本服务在该容器上启动的测试任务是否仍在执行 | 状态迁移与任务生命周期严格同步，不靠猜测；服务重启时残留的 `running` 自动标记为 `interrupted`，不会永久卡死 |
-| **docker top 进程探测**（辅助） | `docker top <容器> -o pid,cmd`，按 `run_tests.sh / aisbench_test.py` 进程特征匹配（已过滤僵尸/defunct 进程） | 容器内是否有测试进程在跑——**可发现其他用户或手工 `docker exec` 启动的测试**，这是注册表覆盖不到的场景 | 只作辅助信号：脚本退出后即使任务还在下载/解析日志，容器也按实际空闲展示 |
+| **后台执行状态注册表**（权威） | 任务启动时在服务端写入 `data/exec_state.json`（内存 + 磁盘持久化），记录每个容器的 `status / phase / run_id / script_running / started_at / ended_at`；任务完成 / 失败 / 取消时立即迁移出 `running` | 本服务在该容器上启动的任务是否仍在执行 | 状态与任务生命周期严格同步；服务重启时残留 `running` 自动标记为 `interrupted`，不会永久卡死 |
+| **docker top 进程探测**（辅助） | `docker top <容器> -o pid,cmd`，按 `run_tests.sh / aisbench_test.py` 进程特征匹配（过滤僵尸进程） | 容器内是否有测试进程——可发现其他用户或手工 `docker exec` 启动的测试 | 只作辅助信号：脚本退出后即使任务还在下载 / 解析日志，容器也按实际空闲展示 |
 
-`busy = 注册表 running 或 检测到测试进程`，并通过 `busy_source`（registry / process / both）标明来源。前端在 busy 期间每 5 秒轮询一次 `/api/containers/busy`，任务结束后"测试执行中"提示**自动消除**，无需手动刷新。
+`busy = 注册表 running 或 检测到测试进程`，并通过 `busy_source`（registry / process / both）标明来源。busy 期间前端每 5 秒轮询，任务结束后提示自动消除。
 
-### 独立工具
+### 安全边界
 
-- [x] **远程日志工具**：当前执行机或**其他服务器**临时连接；宿主机文件 / 容器内文件 / `docker logs` 三种来源；浏览目录、筛选 KV cache 信息并**一键填入步骤 5**、查看日志尾部内容；日志暂不可访问时可**复制等价 grep 命令**自行执行，并把输出粘贴回页面解析
-- [x] **结果对比分析**：结果历史按 run 选择（自动匹配可对比的 `results_*.csv`，无需挑文件）或上传 CSV；按输入/输出长度自动匹配用例；21 项指标（TTFT/TPOT/E2E/吞吐/QPS/命中率等）分组勾选；差异表（A/B/Δ/Δ%，正绿负红）+ A/B 同图分组柱状图 + 导出对比 CSV
-- [x] **会话持久化**：SSH 连接参数/部署信息保存在服务端（服务重启自动重连执行机），测试用例设计保存在浏览器本地（页面刷新不丢失）
-- [x] **实时执行日志**：测试命令以无缓冲模式（`python3 -u`）运行，执行期间日志实时回传；结果摘要表刷新后自动恢复，也可从结果历史一键查看
+- 仅识别 `aisbench_` 前缀容器；其他容器（他人以其他命名规则创建的、或系统容器）一律拒绝操作
+- 清理必须**逐个勾选容器名**，绝不模糊匹配或批量删除；正在执行测试的容器自动跳过
 
 ## 部署方式
 
@@ -75,7 +79,7 @@
 ### 前置要求
 
 - 执行机上已安装 Docker 引擎（无需 Docker Compose 插件，离线部署脚本使用 `docker run` 直接启动）
-- 执行机可 SSH 到目标测试机（也可以就是本机：服务容器通过 `host.docker.internal` 访问宿主机）
+- 服务可 SSH 到目标测试机（也可以就是本机：服务容器通过 `host.docker.internal` 访问宿主机）
 
 ### 方式一：Docker 镜像离线包（推荐，执行机部署）
 
@@ -108,7 +112,7 @@ chmod +x aisbench-web
 ```
 
 可执行文件已内置后端 + 前端 + 测试代码，无需安装 Python；数据目录默认为运行目录下的 `data/`（可用 `AISBENCH_DATA_DIR` 指定）。
-可执行文件在 manylinux2014（glibc 2.17）环境构建，兼容 CentOS 7+ / RHEL 7+ / 麒麟 V10 / openEuler / Ubuntu 18.04+ 等主流发行版；更老系统请使用 Docker 镜像离线包（镜像自带 Python 运行时，不受宿主机 glibc 限制）。
+可执行文件在 manylinux2014（glibc 2.17）环境构建，兼容 CentOS 7+ / RHEL 7+ / 麒麟 V10 / openEuler / Ubuntu 18.04+ 等主流发行版；更老系统请使用 Docker 镜像离线包。
 
 ### 方式三：源码构建（可访问外网时）
 
@@ -127,15 +131,25 @@ docker compose up -d --build
 ```
 data/
 ├── uploads/    # 上传的镜像 tar、代码 zip、SSH 密钥、对比 CSV
+├── platform/   # 任务元数据
 └── results/    # 每次测试的结果 run（日志 + CSV），可在页面下载/删除
 ```
 
 ### 连接宿主机上的服务
 
-容器内已配置 `host.docker.internal` 指向宿主机（Linux 下由 compose 的 `host-gateway` 自动映射）。当 Web 服务与被测 vLLM/执行环境在同一台机器时：
+容器内已配置 `host.docker.internal` 指向宿主机（Linux 下由 compose 的 `host-gateway` 自动映射）。当 Web 服务与被测 vLLM / 执行环境在同一台机器时：
 
 - SSH 主机填 `host.docker.internal`（或宿主机内网 IP）
 - vLLM 服务 IP 同理
+
+## 使用流程
+
+1. **登录**：浏览器打开服务地址，输入执行机 SSH 信息（密码或上传密钥）
+2. **新建任务**：选择镜像 → 填写测试配置（可浏览目录选择权重目录）→ 设计测试用例（可从引擎日志自动获取 KV cache / 最大请求长度）→ 提交
+3. **跟踪**：任务列表实时展示状态；打开任务详情查看实时日志与阶段
+4. **查看结果**：任务完成后查看结果表，下载 CSV / ZIP
+5. **对比**：在“结果对比分析”中加载两次结果，查看指标差异与图表
+6. **（可选）复制历史任务**快速发起同类测试；按容器名勾选清理环境
 
 ## 本地开发与测试
 
@@ -150,48 +164,29 @@ $env:PYTHONPATH="backend"; python -m uvicorn app.main:app --port 8320 --reload
 
 # 运行全部测试（核心模块单测 + FakeSSH API 集成测试）
 python -m pytest tests/ -q
+```
 
-# 前端日志组件测试（PTY \r\n 与进度条刷新场景）
-node tests/test_logconsole.mjs
+前端为原生 ES Modules，配套 Node 测试（jsdom 浏览器级断言）：
 
-# 前端启动自检测试（慢启动/模块失败/脚本404 等场景）
-node tests/test_bootwatchdog.mjs
+```bash
+node tests/test_bootwatchdog.mjs        # 启动自检/慢启动/脚本404
+node tests/test_password_toggle.mjs     # 登录密码显隐
+node tests/test_newtask_chips.mjs       # 长度选择栏渲染
+node tests/test_copy_task.mjs           # 复制历史任务
+node tests/test_engine_kv_fetch.mjs     # 引擎参数自动获取(含其他服务器/命令复制)
+node tests/test_logconsole.mjs          # 日志控制台(进度条折叠/历史快照)
+node tests/test_platform_flow.mjs       # 任务平台主流程
+```
 
-# 登录密码显隐回归（版本化入口 URL + 禁止反向 import main.js）
-node tests/test_password_toggle.mjs
-node tests/test_password_toggle_versioned_entry.mjs
+静态检查：
 
-# 新建任务页长度选择栏回归（历史设计回填 + 预设重试场景）
-node tests/test_newtask_chips.mjs
-node tests/test_newtask_presets_retry.mjs
-
-# 复制历史任务新建任务（列表/详情 → 表单回填 → 提交）
-node tests/test_copy_task.mjs
-
-# 静态检查
+```bash
 python -m pyflakes backend/app tests
 ```
 
 > 前端 JS 均为 ES module：pytest 会自动以模块目标逐个解析校验（`tests/test_frontend_syntax.py`）。
-> 手动检查时注意 `node --check xx.js`（脚本目标）**不会**暴露"字符串内含真实换行"这类错误，
+> 手动检查时注意 `node --check xx.js`（脚本目标）**不会**暴露“字符串内含真实换行”这类错误，
 > 必须复制为 `.mjs` 后检查：`cp xx.js /tmp/c.mjs && node --check /tmp/c.mjs`。
-
-## 使用流程
-
-1. **连接**：步骤 1 输入执行机 SSH 信息（密码或上传密钥）
-2. **选容器**：步骤 2 直接选择已有 `aisbench_*` 容器（推荐）；容器不存在时从已有镜像选择 → 设置模型父目录挂载 → 命名 → 创建
-3. **配置**：步骤 3 填写模型服务参数（名称 / IP / Port）并保存到所选容器（可回读校验）
-4. **设计**：步骤 4 填入 KV cache 信息（可从日志工具一键获取）生成用例，按需增删改
-5. **执行**：步骤 5 选择执行容器（busy 时不建议复用）执行测试，完成后查看/下载结果 CSV
-6. **（可选）**：按容器名勾选清理环境；在"结果对比分析"中加载两次结果，查看指标差异
-
-## 截图
-
-<!-- TODO: 补充界面截图 -->
-
-| 五步向导 | 日志工具 | 结果对比 |
-|---|---|---|
-| ![wizard](docs/screenshots/wizard.png) | ![logtools](docs/screenshots/logtools.png) | ![compare](docs/screenshots/compare.png) |
 
 ## 技术栈
 
