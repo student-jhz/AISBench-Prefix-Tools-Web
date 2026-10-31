@@ -286,6 +286,11 @@ jobs:
 
           v2.0.4 修复该语法错误, 并新增两道发布闸门: pytest 参数化用例(每个前端 JS 按 ES module 解析, 与浏览器同款语义) + CI 在镜像构建前与冒烟测试中实际解析全部模块, 此类问题今后无法再进入发版。
 
+          ## 🚀 v3.0.3 新增
+
+          - **新增引擎参数自动获取**: 新建任务的测试用例设计步骤提供「从引擎日志自动获取」入口, 从 vLLM 启动日志筛选 `GPU KV cache size` 与 `Maximum concurrency`, 一键填入单个DP组KV cache 与最大请求长度(方法迁移自桌面版 AISBench-Prefix-Tools 的日志工具)。支持三种日志来源: 宿主机日志文件(目录浏览)、容器内日志文件(选引擎容器后浏览)、容器运行日志(`docker logs | grep`); 弹窗展示实际执行命令与匹配行, 解析值确认后回填并重渲染长度选择栏; 无匹配行时明确提示且禁止误填
+          - **修复 hidden 属性被 flex 样式覆盖**: 全局新增 `[hidden] { display:none !important }`, JS 隐藏的元素不再因 `.form-actions`/`.browser-path-row` 等类的 `display:flex` 声明而仍然可见(引擎日志弹窗的模式切换行被真实浏览器验收捕获该问题)
+
           ## 🔧 v3.0.2 修复
 
           - **修复任务结果表 TTFT/TPOT 等指标全部为空**: 结果行由桌面版解析层产出(CSV 字段 `TTFT_avg`/`total_req`/`E2E_throughput` 等), 而详情页前端结果表读取小写驼峰契约(`ttft_avg`/`data_num`/`total_throughput` 等), 字段名不一致导致指标列全部渲染为空。现详情 API 在视图层做读时字段归一化, **旧版本已持久化的历史任务同样在读取时归一化**, 升级后结果表不再空列; `repeat_rate` 从任务设计的用例回填, `concurrency` 取实测值并支持回退, 命中率/重复率带 % 展示
