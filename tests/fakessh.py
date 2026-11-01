@@ -5,6 +5,7 @@ import json
 import os
 import re
 import tarfile
+import time
 
 
 SAMPLE_TEST_LOG = """2026-10-20 10:00:00 INFO input token length: 8192
@@ -49,6 +50,11 @@ class FakeSSH:
         self.container_fs = {}  # name -> {容器内路径: [子目录名, ...]}(ls 浏览用)
         self.container_logs = {}  # name -> 容器日志文本(docker logs / 引擎 KV grep)
         self.exec_log = []
+        # ---- 并行任务测试支持 ----
+        # run_tests_gate: 设置后 run_tests 命令阻塞直到 gate.set()(模拟长测试)
+        self.run_tests_gate = None
+        self.run_tests_owners = []       # 已进入 run_tests 的 owner(任务ID)列表
+        self.cancelled_owners = set()    # 被 cancel_active(owner) 取消的 owner
 
     # ------------------------------------------------------------ 连接
 
@@ -65,8 +71,9 @@ class FakeSSH:
     def disconnect(self):
         self.connected = False
 
-    def cancel_active(self):
-        pass
+    def cancel_active(self, owner=None):
+        """记录被取消的 owner(模拟真实实现: 只关闭该 owner 的 channel)"""
+        self.cancelled_owners.add(owner)
 
     # ------------------------------------------------------------ 命令执行
 
@@ -287,7 +294,7 @@ class FakeSSH:
         return 0, "", ""
 
     def execute_with_callback(self, command, callback=None, timeout=600,
-                              capture=False):
+                              capture=False, owner=None):
         self.exec_log.append(command)
 
         if "docker load" in command:
@@ -317,6 +324,14 @@ class FakeSSH:
             # 与真实 docker 行为一致 —— v3.0 平台任务用独立工作目录)
             m = re.search(r"docker exec -w \S+ (\S+) bash", command)
             cname = m.group(1) if m else ""
+            if self.run_tests_gate is not None:
+                # 模拟长测试: 阻塞直到 gate 放行 或 该任务被取消
+                # (真实实现中 cancel_active(owner) 会关闭对应 channel)
+                self.run_tests_owners.append(owner)
+                while not self.run_tests_gate.is_set():
+                    if owner in self.cancelled_owners:
+                        return (-1, "") if capture else -1
+                    time.sleep(0.01)
             binds = self.container_meta.get(cname, {}).get("binds", [])
             workdir = next(
                 (b.split(":")[0] for b in binds

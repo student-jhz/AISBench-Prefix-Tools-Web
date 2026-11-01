@@ -1152,7 +1152,7 @@ async function submitTask() {
       },
     });
     toast(data.message, "success");
-    setMsg("#submitMsg", `✓ ${data.message}, 正在排队执行...`, "ok");
+    setMsg("#submitMsg", `✓ ${data.message}, 已开始执行...`, "ok");
     // 跳转任务列表查看执行进度
     await window.refreshTasks?.();
     showView("tasks");

@@ -322,6 +322,66 @@ class TestTaskFlow:
         task = wait_task(c, task_id, headers)
         assert task["status"] in ("cancelled", "done")
 
+    def test_tasks_execute_in_parallel(self, pclient):
+        """并行执行: 两个任务同时进入测试阶段, 各用独立容器(不排队)"""
+        c, ssh, _ = pclient
+        headers, _ = login(c)
+        ssh.images.add("aisbench:v1")
+        # 模拟长测试: run_tests 阻塞直到放行, 才能观察到真正的并发
+        gate = threading.Event()
+        ssh.run_tests_gate = gate
+        ids = [c.post("/api/platform/tasks", json=TASK_BODY,
+                      headers=headers).json()["id"] for _ in range(2)]
+
+        # 串行实现下第二个任务永远到不了 run_tests 阶段
+        deadline = time.time() + 10
+        while time.time() < deadline and len(ssh.run_tests_owners) < 2:
+            time.sleep(0.05)
+        assert sorted(ssh.run_tests_owners) == sorted(ids)
+        # 各任务独立内部容器, 同时存在
+        task_containers = [n for n in ssh.containers
+                           if n.startswith("aisbench_task_")]
+        assert len(task_containers) == 2
+        # 两个任务此刻都是 active(并行执行中)
+        for tid in ids:
+            r = c.get(f"/api/platform/tasks/{tid}", headers=headers)
+            assert r.json()["status"] in ("running", "preparing",
+                                          "collecting")
+
+        gate.set()
+        for tid in ids:
+            task = wait_task(c, tid, headers)
+            assert task["status"] == "done"
+
+    def test_cancel_one_task_does_not_kill_parallel_task(self, pclient):
+        """取消隔离: 取消任务A只中断A的远程命令, 并行中的任务B不受影响"""
+        c, ssh, _ = pclient
+        headers, _ = login(c)
+        ssh.images.add("aisbench:v1")
+        gate = threading.Event()
+        ssh.run_tests_gate = gate
+        ids = [c.post("/api/platform/tasks", json=TASK_BODY,
+                      headers=headers).json()["id"] for _ in range(2)]
+        id_a, id_b = ids
+
+        deadline = time.time() + 10
+        while time.time() < deadline and len(ssh.run_tests_owners) < 2:
+            time.sleep(0.05)
+
+        # 取消A: 只关闭A自己的 channel, B仍停留在 run_tests 阶段
+        r = c.post(f"/api/platform/tasks/{id_a}/cancel", headers=headers)
+        assert r.json()["ok"] is True
+        task_a = wait_task(c, id_a, headers)
+        assert task_a["status"] == "cancelled"
+        assert ssh.run_tests_owners.count(id_b) == 1
+        r = c.get(f"/api/platform/tasks/{id_b}", headers=headers)
+        assert r.json()["status"] == "running"
+
+        # B继续执行直至完成
+        gate.set()
+        task_b = wait_task(c, id_b, headers)
+        assert task_b["status"] == "done"
+
 
 class TestStartupRecovery:
     def test_running_task_marked_interrupted(self, tmp_path):

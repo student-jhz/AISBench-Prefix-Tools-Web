@@ -63,6 +63,9 @@ class DockerManager:
         self.code_mount_path = "/benchmark/ais_bench/aisbench_auto_tools_prefix-main"
         self.code_host_path = ""
         self.remote_work_base = "/tmp/AISBench_Prefix_Tools"
+        # 本 DockerManager 发起的远程命令归属(平台任务设为任务ID):
+        # 并行执行时 cancel 只中断本任务的命令, 不误伤其他任务
+        self.channel_owner: Optional[str] = None
 
     @staticmethod
     def _shquote(s: str) -> str:
@@ -168,7 +171,7 @@ class DockerManager:
 
         cmd = f"docker load -i {remote_tar_path}"
         exit_code, output = self.ssh.execute_with_callback(
-            cmd, callback, timeout=3600, capture=True)
+            cmd, callback, timeout=3600, capture=True, owner=self.channel_owner)
 
         if exit_code != 0:
             if callback:
@@ -449,7 +452,8 @@ class DockerManager:
         if callback:
             callback(f"创建容器命令:\n{cmd}\n\n")
 
-        exit_code = self.ssh.execute_with_callback(cmd, callback, timeout=60)
+        exit_code = self.ssh.execute_with_callback(cmd, callback, timeout=60,
+                                                   owner=self.channel_owner)
 
         if exit_code != 0:
             return False, f"容器创建失败 (exit_code={exit_code})"
@@ -534,7 +538,8 @@ class DockerManager:
         if callback:
             callback(f"解压代码包: {cmd}\n")
 
-        exit_code = self.ssh.execute_with_callback(cmd, callback, timeout=120)
+        exit_code = self.ssh.execute_with_callback(cmd, callback, timeout=120,
+                                                   owner=self.channel_owner)
 
         if exit_code != 0:
             # 尝试安装unzip
@@ -543,7 +548,8 @@ class DockerManager:
             self.ssh.execute(
                 "yum install -y unzip 2>/dev/null || apt-get install -y unzip 2>/dev/null")
             exit_code = self.ssh.execute_with_callback(
-                f"cd {extract_dir} && unzip -o {remote_zip_path}", callback, timeout=120
+                f"cd {extract_dir} && unzip -o {remote_zip_path}", callback,
+                timeout=120, owner=self.channel_owner
             )
 
         if exit_code != 0:
@@ -578,7 +584,8 @@ class DockerManager:
             return -1
 
         cmd = f"docker exec -w {self.code_mount_path} {self.container_name} {command}"
-        return self.ssh.execute_with_callback(cmd, callback, timeout=timeout)
+        return self.ssh.execute_with_callback(cmd, callback, timeout=timeout,
+                                              owner=self.channel_owner)
 
     def container_is_running(self) -> bool:
         """检查容器是否在运行"""
@@ -623,7 +630,8 @@ class DockerManager:
         """在容器内运行测试脚本 (bash <script>)"""
         container_script = f"{self.code_mount_path}/{script_name}"
         cmd = f"docker exec -w {self.code_mount_path} {self.container_name} bash {container_script}"
-        return self.ssh.execute_with_callback(cmd, callback, timeout=timeout)
+        return self.ssh.execute_with_callback(cmd, callback, timeout=timeout,
+                                              owner=self.channel_owner)
 
     def find_latest_log_dir(self) -> Optional[str]:
         """查找最新的 test_logs_* 目录(宿主机路径)"""

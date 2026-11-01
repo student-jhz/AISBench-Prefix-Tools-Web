@@ -1,19 +1,19 @@
-"""任务调度器 —— 队列化执行测试任务, 容器完全对用户不可见
+"""任务调度器 —— 每个任务独立线程并行执行, 容器完全对用户不可见
 
-执行模型(v3.0):
+执行模型(v1.0):
 - 每个任务在执行时自动创建一个内部容器 aisbench_task_<id>(用后即删),
   用户全程只与"任务"交互;
-- 默认串行执行(AISBENCH_MAX_PARALLEL_TASKS 可调): 单台执行机的 GPU/显存
-  是共享资源, 并发压测会互相干扰 —— 排队是平台语义而非容器 busy 语义;
-- 任务通过创建者的 SSH 会话在执行机上执行;
+- 任务并行执行, 不设最大并发数: 压测容器本身不占用 GPU/显存,
+   只向推理服务发请求; 每个任务使用独立容器 aisbench_task_<id> 与独立
+   工作目录 /tmp/AISBench_Platform/<task_id>, 任务之间互不干扰;
+- 任务通过创建者的 SSH 会话在执行机上执行(SSH 连接多通道复用,
+   取消任务时只中断该任务自己的远程命令);
 - 登录时顺带清理孤儿任务容器(服务中断遗留的 aisbench_task_*)。
 """
 
-import os
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from ..core import config_manager as cm
 from ..core.docker_manager import DockerManager
@@ -33,40 +33,31 @@ class TaskScheduler:
 
     def __init__(self, bus: LogBus, store: TaskStore,
                  sessions: SessionRegistry, results_dir: Path,
-                 core_code_dir: Path, max_parallel: int = 0):
+                 core_code_dir: Path):
         self.bus = bus
         self.store = store
         self.sessions = sessions
         self.results_dir = Path(results_dir)
         self.core_code_dir = Path(core_code_dir)
-        env = int(os.environ.get("AISBENCH_MAX_PARALLEL_TASKS", "0") or 0)
-        self.max_parallel = max_parallel or env or 1
-        self._wake = threading.Event()
         self._lock = threading.Lock()
         self._cancel_events: dict = {}   # task_id -> Event
-        self._running_ids: set = set()
-        self._workers: list = []
         # 登录后清理孤儿任务容器(上次服务中断可能遗留)
         sessions.add_login_hook(self._cleanup_orphans_async)
 
     # ------------------------------------------------------------ 生命周期
 
     def start(self):
-        """启动 worker 线程 + 恢复上次未终结任务"""
+        """启动时恢复上次未终结任务(执行线程按提交创建, 无需常驻 worker)"""
         recovered = self.store.recover_on_startup()
         if recovered:
             self._log("platform",
                       f"服务重启恢复: {recovered} 个未完成任务标记为已中断\n")
-        for i in range(self.max_parallel):
-            t = threading.Thread(target=self._worker_loop, daemon=True,
-                                 name=f"platform-task-worker-{i + 1}")
-            t.start()
-            self._workers.append(t)
 
     def submit(self, task: PlatformTask):
-        """新任务入队并唤醒 worker"""
+        """新任务立即启动专属执行线程(并行执行, 不排队)"""
         self._cancel_events[task.id] = threading.Event()
-        self._wake.set()
+        threading.Thread(target=self._run_task, args=(task,), daemon=True,
+                         name=f"platform-task-{task.id}").start()
 
     def cancel(self, task_id: str) -> bool:
         """取消任务: 排队中直接取消; 执行中中断当前命令后收尾"""
@@ -86,7 +77,8 @@ class TaskScheduler:
         session = self.sessions.get(task.token)
         if session:
             try:
-                session.ssh.cancel_active()
+                # 只中断该任务自己的远程命令; 同连接上其他并行任务不受影响
+                session.ssh.cancel_active(owner=task.id)
             except Exception:  # noqa: BLE001
                 pass
         return True
@@ -95,39 +87,22 @@ class TaskScheduler:
         task = self.store.get(task_id)
         return bool(task and task.status in ACTIVE_STATUSES)
 
-    # ------------------------------------------------------------ worker
+    # ------------------------------------------------------------ 任务线程
 
-    def _worker_loop(self):
-        while True:
-            task = self._next_queued()
-            if task is None:
-                self._wake.wait(2.0)
-                self._wake.clear()
-                continue
-            try:
-                self._execute(task)
-            except _TaskCancelled:
-                self._transition(task, "cancelled", error="已取消")
-                self._log(task.log_channel, "\n✹ 任务已取消\n")
-            except Exception as e:  # noqa: BLE001 - 任何异常都终结任务
-                self._transition(task, "error", error=str(e))
-                self._log(task.log_channel, f"\n✗ 任务失败: {e}\n")
-            finally:
-                with self._lock:
-                    self._running_ids.discard(task.id)
-                    self._cancel_events.pop(task.id, None)
-                self._cleanup_task_env(task)
-                self._wake.set()
-
-    def _next_queued(self) -> Optional[PlatformTask]:
-        with self._lock:
-            running = set(self._running_ids)
-        for task in self.store.list():
-            if task.status == "queued" and task.id not in running:
-                with self._lock:
-                    self._running_ids.add(task.id)
-                return task
-        return None
+    def _run_task(self, task: PlatformTask):
+        """单个任务的执行线程(每个任务一个, 互不阻塞)"""
+        try:
+            self._execute(task)
+        except _TaskCancelled:
+            self._transition(task, "cancelled", error="已取消")
+            self._log(task.log_channel, "\n✹ 任务已取消\n")
+        except Exception as e:  # noqa: BLE001 - 任何异常都终结任务
+            self._transition(task, "error", error=str(e))
+            self._log(task.log_channel, f"\n✗ 任务失败: {e}\n")
+        finally:
+            with self._lock:
+                self._cancel_events.pop(task.id, None)
+            self._cleanup_task_env(task)
 
     def _execute(self, task: PlatformTask):
         log = self.bus.channel_logger(task.log_channel)
@@ -238,6 +213,7 @@ class TaskScheduler:
         task.work_dir = f"{WORK_DIR_BASE}/{task.id}"
         code_host = f"{task.work_dir}/aisbench_auto_tools_prefix-main"
         docker = DockerManager(session.ssh)
+        docker.channel_owner = task.id   # 并行任务的取消隔离
         docker.container_name = task.container
         docker.image_name = task.image
         docker.code_host_path = code_host

@@ -33,7 +33,10 @@ class SSHManager:
         self.port = 22
         self.username = ""
         self._connected = False
-        self._active_channel = None
+        # 并行任务共享同一 SSH 连接: 每个 exec channel 按 owner(任务ID)登记,
+        # 取消任务时只关闭该任务自己的 channel, 不误伤其他并行任务。
+        # owner=None 表示无主命令(旧版向导), cancel_active() 只作用于它们。
+        self._active_channels: dict = {}
         self._channel_lock = threading.Lock()
 
     @property
@@ -116,11 +119,13 @@ class SSHManager:
     def execute_with_callback(self, command: str,
                               callback: Callable[[str], None] = None,
                               timeout: int = 600,
-                              capture: bool = False) -> "int | tuple":
+                              capture: bool = False,
+                              owner: str = None) -> "int | tuple":
         """执行命令并实时输出(通过回调函数)
 
         capture=False: 返回 exit_code
         capture=True:  返回 (exit_code, accumulated_output)
+        owner: 命令归属(如任务ID); cancel_active(owner) 只中断归属匹配的命令
         """
         if not self.connected or not self.client:
             return (-1, "") if capture else -1
@@ -135,7 +140,7 @@ class SSHManager:
             channel.get_pty()
             channel.exec_command(command)
             with self._channel_lock:
-                self._active_channel = channel
+                self._active_channels.setdefault(owner, []).append(channel)
 
             deadline = time.time() + timeout
             eof_seen_at = None
@@ -197,18 +202,28 @@ class SSHManager:
             return (-1, "".join(chunks)) if capture else -1
         finally:
             with self._channel_lock:
-                self._active_channel = None
+                channels = self._active_channels.get(owner)
+                if channels is not None:
+                    if channel in channels:
+                        channels.remove(channel)
+                    if not channels:
+                        self._active_channels.pop(owner, None)
             if channel is not None:
                 try:
                     channel.close()
                 except Exception:  # noqa: BLE001 - 关闭失败不影响结果
                     pass
 
-    def cancel_active(self):
-        """主动关闭当前活动 channel, 用于取消正在执行的远程命令"""
+    def cancel_active(self, owner: str = None):
+        """主动关闭指定 owner 的活动 channel, 用于取消正在执行的远程命令
+
+        只中断 owner 匹配的命令: 并行任务各自持有独立 channel,
+        取消任务 A 不会波及同连接上正在执行的任务 B。
+        不传 owner 时作用于无主命令(旧版向导)。
+        """
         with self._channel_lock:
-            channel = self._active_channel
-        if channel is not None:
+            channels = list(self._active_channels.get(owner, []))
+        for channel in channels:
             try:
                 channel.close()
             except Exception:  # noqa: BLE001
