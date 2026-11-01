@@ -20,228 +20,40 @@ env:
   IMAGE_NAME: aisbench-prefix-tools-web
 
 jobs:
-  # ------------------------------------------------------------ Docker 镜像 tar 包
-  docker-image:
-    name: Docker 镜像包 (linux/${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { arch: amd64, runner: ubuntu-latest }
-          - { arch: arm64, runner: ubuntu-24.04-arm }
+  resolve:
+    name: 解析版本
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      ref: ${{ steps.ver.outputs.ref }}
     steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
-
       - name: 解析版本
         id: ver
         shell: bash
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG="${{ inputs.tag }}"
+            REF="${{ inputs.tag }}"
           else
             TAG="${GITHUB_REF_NAME}"
+            REF="${GITHUB_REF}"
           fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "ref=${REF}" >> "$GITHUB_OUTPUT"
 
-      - name: 前端模块语法检查(阻断带伤发布)
-        shell: bash
-        run: |
-          # v2.0.4 守卫: 前端 JS 全部是 ES module, 必须按模块目标解析。
-          # 教训: node --check 对 .js(脚本目标)不会暴露"字符串内含真实换行"
-          # 这类错误, 曾因此带伤发布 v2.0.1~v2.0.3(浏览器 SyntaxError 白屏)。
-          mkdir -p /tmp/modcheck
-          fail=0
-          for f in frontend/static/js/*.js; do
-            cp "$f" /tmp/modcheck/check.mjs
-            if ! node --check /tmp/modcheck/check.mjs; then
-              echo "::error::语法错误: $f (浏览器将无法加载, 禁止发布)" >&2
-              fail=1
-            fi
-          done
-          [ "$fail" -eq 0 ] && echo "所有前端模块语法检查通过"
-          exit $fail
-
-      - name: 构建镜像
-        run: docker build -t "${IMAGE_NAME}:${{ steps.ver.outputs.version }}" .
-
-      - name: 镜像冒烟测试
-        run: |
-          docker run -d --name smoke -p 8320:8320 "${IMAGE_NAME}:${{ steps.ver.outputs.version }}"
-          for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8320/api/health -o health.json; then break; fi
-            sleep 1
-          done
-          cat health.json; echo
-          curl -fsS http://127.0.0.1:8320/ -o index.html
-          grep -q "AISBench Prefix Tools" index.html
-          # 前端资源完整性: 入口引用的版本化 JS 必须真实存在且可加载
-          # (防止文件重命名/删除后入口引用悬空导致整页空白)
-          grep -q 'main.js?v=' index.html
-          grep -q 'id="bootError"' index.html
-          JS=$(grep -oE 'src="/static/js/main\.js\?v=[^"]+"' index.html | head -1 | sed 's/src="//;s/"$//')
-          curl -fsS "http://127.0.0.1:8320${JS}" -o main.js
-          # v3.0 前端是任务平台入口, 登录/任务列表/新建任务是核心页面模块
-          grep -q 'from "./login.js"' main.js
-          grep -q 'from "./tasks.js"' main.js
-          grep -q 'from "./newtask.js"' main.js
-          for M in $(grep -oE 'from "\./[a-z0-9]+\.js"' main.js | sed 's/from "\.\///;s/"//'); do
-            curl -fsS "http://127.0.0.1:8320/static/js/${M}" -o mod.js
-            cp mod.js /tmp/smoke_mod.mjs
-            # 实际按 ES module 解析(与浏览器一致), 而非仅检查文件存在
-            node --check /tmp/smoke_mod.mjs
-          done
-          cp main.js /tmp/smoke_main.mjs
-          node --check /tmp/smoke_main.mjs
-          docker rm -f smoke
-
-      - name: 导出镜像 tar
-        run: |
-          docker save "${IMAGE_NAME}:${{ steps.ver.outputs.version }}" | gzip \
-            > "${IMAGE_NAME}_${{ steps.ver.outputs.version }}_linux_${{ matrix.arch }}.docker.tar.gz"
-
-      - name: 组装离线部署包
-        run: |
-          VER="${{ steps.ver.outputs.version }}"
-          BUNDLE="aisbench-web-offline_${VER}_linux_${{ matrix.arch }}"
-          mkdir -p "bundle/${BUNDLE}"
-          cp "${IMAGE_NAME}_${VER}_linux_${{ matrix.arch }}.docker.tar.gz" "bundle/${BUNDLE}/"
-          sed "s/__VERSION__/${VER}/g" deploy/docker-compose.offline.yml \
-            > "bundle/${BUNDLE}/docker-compose.yml"
-          sed -e "s/__VERSION__/${VER}/g" -e "s/__ARCH__/${{ matrix.arch }}/g" \
-            deploy/deploy_offline.sh > "bundle/${BUNDLE}/deploy.sh"
-          chmod +x "bundle/${BUNDLE}/deploy.sh"
-          cp deploy/OFFLINE-README.md "bundle/${BUNDLE}/"
-          (cd bundle && zip -r "../${BUNDLE}.zip" "${BUNDLE}")
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: docker-${{ matrix.arch }}
-          path: |
-            *.docker.tar.gz
-            aisbench-web-offline_*.zip
-          if-no-files-found: error
-
-  # ------------------------------------------------------------ 单文件可执行
-  executable:
-    name: 单文件可执行 (${{ matrix.name }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # 在 manylinux2014 (glibc 2.17) 容器内构建, 且 Python 用
-          # python-build-standalone(glibc 2.17 基线, 共享 libpython),
-          # 产物可运行于 CentOS 7+ / RHEL 7+ / 麒麟V10 / openEuler /
-          # Ubuntu 18.04+ 等 glibc >= 2.17 的主流发行版。
-          - { name: linux_amd64, runner: ubuntu-latest, manylinux: manylinux2014_x86_64 }
-          - { name: linux_arm64, runner: ubuntu-24.04-arm, manylinux: manylinux2014_aarch64 }
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
-
-      - name: 解析版本
-        id: ver
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ inputs.tag }}"
-          else
-            TAG="${GITHUB_REF_NAME}"
-          fi
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
-
-      - name: 拉取 manylinux 构建镜像
-        shell: bash
-        run: docker pull "quay.io/pypa/${{ matrix.manylinux }}" 2>&1 | tee pull.log
-
-      - name: 在 manylinux2014 容器内 PyInstaller 打包
-        shell: bash
-        run: |
-          # 构建逻辑在 deploy/build-executable.sh(容器内以 root 运行, 结束时
-          # chown 回 runner 用户)。shell 指定 bash 以启用 pipefail, 让 docker
-          # 的退出码穿透 tee; build.log 供失败诊断使用。
-          docker run --rm \
-            -v "$PWD:/src" -w /src \
-            -e RUNNER_UID="$(id -u)" -e RUNNER_GID="$(id -g)" \
-            quay.io/pypa/${{ matrix.manylinux }} \
-            /bin/bash /src/deploy/build-executable.sh 2>&1 | tee build.log
-
-      - name: 冒烟测试
-        shell: bash
-        run: |
-          # 直接在 manylinux2014 (glibc 2.17) 容器内运行, 确证二进制
-          # 兼容 CentOS 7 / RHEL 7 等老系统环境
-          (
-            chmod +x dist/aisbench-web
-            docker run -d --name smoke \
-              -p 8320:8320 \
-              -v "$PWD/dist:/exe:ro" \
-              -e AISBENCH_DATA_DIR=/tmp/aisbench-data \
-              quay.io/pypa/${{ matrix.manylinux }} /exe/aisbench-web
-            for i in $(seq 1 60); do
-              if curl -fsS http://127.0.0.1:8320/api/health -o health.json; then break; fi
-              sleep 1
-            done
-            cat health.json; echo
-            curl -fsS http://127.0.0.1:8320/ -o index.html
-            grep -q "AISBench Prefix Tools" index.html
-            docker logs smoke > server.log 2>&1
-            grep -q "内置测试代码: OK" server.log
-            docker rm -f smoke
-          ) 2>&1 | tee smoke.log
-
-      - name: 发布失败日志到 ci-logs 分支
-        if: failure()
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # Actions 网页日志需要登录才能查看; 失败时把关键日志推送到公开
-          # ci-logs 分支, 方便离线排查(匿名可通过 raw.githubusercontent 读取)。
-          REPO="$GITHUB_REPOSITORY"
-          if ! gh api "repos/$REPO/git/ref/heads/ci-logs" >/dev/null 2>&1; then
-            gh api "repos/$REPO/git/refs" \
-              -f ref=refs/heads/ci-logs -f sha="$GITHUB_SHA" >/dev/null 2>&1 || true
-            sleep 3
-          fi
-          for f in pull.log build.log smoke.log server.log health.json; do
-            [ -f "$f" ] || continue
-            name="${{ steps.ver.outputs.tag }}-${{ matrix.name }}-$(date -u +%Y%m%dT%H%M%SZ)-$f"
-            gh api -X PUT "repos/$REPO/contents/logs/$name" \
-              -f message="ci log ${{ steps.ver.outputs.tag }} ${{ matrix.name }}: $f" \
-              -f content="$(base64 -w0 "$f")" \
-              -f branch=ci-logs >/dev/null \
-              || echo "WARN: 上传 $f 到 ci-logs 失败"
-          done
-
-      - name: 打包产物
-        shell: bash
-        run: |
-          VER="${{ steps.ver.outputs.version }}"
-          mkdir pkg
-          cp dist/aisbench-web pkg/
-          cp deploy/OFFLINE-README.md pkg/
-          tar czf "aisbench-web_${VER}_${{ matrix.name }}.tar.gz" \
-            -C pkg aisbench-web OFFLINE-README.md
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: executable-${{ matrix.name }}
-          path: |
-            aisbench-web_*.tar.gz
-            aisbench-web_*.zip
-          if-no-files-found: error
+  build:
+    name: 构建产物
+    needs: resolve
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ needs.resolve.outputs.version }}
+      ref: ${{ needs.resolve.outputs.ref }}
 
   # ------------------------------------------------------------ 发布 Release
   release:
     name: 发布 Release
-    needs: [docker-image, executable]
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

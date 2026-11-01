@@ -1,0 +1,44 @@
+name: Dev Build
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dev-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  resolve:
+    name: 解析 dev 版本
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      ref: ${{ steps.ver.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 解析版本
+        id: ver
+        shell: bash
+        run: |
+          BASE=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' backend/app/version.py)
+          if [ -z "$BASE" ]; then
+            echo "::error::无法从 backend/app/version.py 解析版本号" >&2
+            exit 1
+          fi
+          SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
+          echo "version=${BASE}-dev.${SHA}" >> "$GITHUB_OUTPUT"
+          echo "ref=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: 构建产物 (dev)
+    needs: resolve
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ needs.resolve.outputs.version }}
+      ref: ${{ needs.resolve.outputs.ref }}
