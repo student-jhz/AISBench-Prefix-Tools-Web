@@ -181,7 +181,7 @@ footer {
   <table>
     <tr><th>角色</th><th>要求</th></tr>
     <tr><td><strong>执行机</strong>（跑测试的机器）</td><td>Linux + Docker 引擎；已有 aisbench 测试镜像与模型权重；推理服务已启动</td></tr>
-    <tr><td><strong>服务机</strong>（跑本平台）</td><td>能 SSH 登录执行机；与执行机是同一台时部署最简单</td></tr>
+    <tr><td><strong>服务机</strong>（跑本平台）</td><td>能 SSH 登录执行机；Linux 或 Windows 均可，部署方式见下方（与执行机是同一台时最简单）</td></tr>
     <tr><td><strong>浏览器</strong></td><td>Chrome / Edge 等现代浏览器，无需安装任何插件</td></tr>
   </table>
 
@@ -196,15 +196,29 @@ bash deploy.sh</code></pre>
   </div>
 
   <div class="card">
-    <h4><span class="tag tag-green">免 Docker</span> 方式二：单文件可执行（服务机没装 Docker 时）</h4>
-    <p class="muted">适合把平台部署在办公电脑 / 跳板机、通过 SSH 控制执行机的场景（执行机本身仍需 Docker）：</p>
-    <pre><code>tar xzf aisbench-web_1.0.1_linux_amd64.tar.gz
-chmod +x aisbench-web
-./aisbench-web          <span class="c"># 默认 8320 端口, AISBENCH_PORT 可修改</span></code></pre>
+    <h4><span class="tag tag-blue">Windows</span> 方式二：Windows 办公电脑（装 Docker Desktop）</h4>
+    <p class="muted">平台跑在自己 Windows 电脑上，通过 SSH 控制远程 Linux 执行机（执行机本身仍需 Docker）。前提：安装 <a href="https://www.docker.com/products/docker-desktop/" target="_blank" rel="noopener">Docker Desktop</a>（含 WSL2）。</p>
+    <p class="muted">从 <a href="https://github.com/student-jhz/AISBench-Prefix-Tools-Web/releases" target="_blank" rel="noopener">Releases 页</a>下载 <code>aisbench-prefix-tools-web_1.0.1_linux_amd64.docker.tar.gz</code>，在 PowerShell 中执行：</p>
+    <pre><code>docker load -i aisbench-prefix-tools-web_1.0.1_linux_amd64.docker.tar.gz
+mkdir data
+docker run -d --name aisbench-prefix-tools-web `
+  -p 8320:8320 `
+  -v "$(Get-Location)\data:/app/data" `
+  --restart unless-stopped `
+  aisbench-prefix-tools-web:1.0.1</code></pre>
+    <p class="muted">浏览器打开 <code>http://localhost:8320</code>，登录时填<strong>执行机</strong>的 SSH 信息即可。数据保存在当前目录的 <code>data\</code> 文件夹；Windows 下无需配置 <code>host.docker.internal</code>（Docker Desktop 自带）。</p>
   </div>
 
   <div class="card">
-    <h4><span class="tag tag-amber">开发者</span> 方式三：源码部署（可访问外网时）</h4>
+    <h4><span class="tag tag-green">仅 Linux</span> 方式三：单文件可执行（Linux 服务机没装 Docker 时）</h4>
+    <p class="muted">适合 Linux 跳板机 / Linux 办公电脑、且不装 Docker 的场景。⚠ 该文件是 Linux 可执行程序，<strong>Windows 电脑请用上面的方式二</strong>：</p>
+    <pre><code>tar xzf aisbench-web_1.0.1_linux_amd64.tar.gz
+chmod +x aisbench-web
+./aisbench-web     <span class="c"># 默认 8320 端口, AISBENCH_PORT 可修改</span></code></pre>
+  </div>
+
+  <div class="card">
+    <h4><span class="tag tag-amber">开发者</span> 方式四：源码部署（可访问外网时）</h4>
     <pre><code>git clone https://github.com/student-jhz/AISBench-Prefix-Tools-Web.git
 cd AISBench-Prefix-Tools-Web
 docker compose up -d --build</code></pre>
