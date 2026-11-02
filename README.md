@@ -2,6 +2,7 @@
 
 **AISBench Prefix Cache 性能测试的多用户 Web 平台**。部署在单台执行机上，测试人员用浏览器登录执行机，即可发布 Prefix Cache 测试任务、跟踪执行进度、查看并对比结果数据。底层执行环境（Docker 容器）由平台自动准备与回收，用户全程无需接触容器等底层概念。
 
+> 📖 在线使用文档（部署 · 访问 · 图文操作指南）：https://student-jhz.github.io/AISBench-Prefix-Tools-Web/
 > 📐 架构设计文档：[docs/DESIGN.md](docs/DESIGN.md)
 > 🧭 上游桌面版工具：[ucm-system/AISBench-Prefix-Tools](https://github.com/ucm-system/AISBench-Prefix-Tools)
 
