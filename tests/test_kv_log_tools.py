@@ -13,6 +13,21 @@ class TestParseKV:
         assert kv == 198469
         assert max_len == 131072
 
+    def test_parse_npu_log(self):
+        """NPU 生态: 日志为 "NPU KV cache size: ... tokens" 也可解析"""
+        text = (
+            "INFO NPU KV cache size: 111,111 tokens\n"
+            "INFO Maximum concurrency for 65,536 tokens per request: 2.00x"
+        )
+        kv, max_len = kvt.parse_kv_results(text)
+        assert kv == 111111
+        assert max_len == 65536
+
+    def test_parse_generic_kv_line_not_matched(self):
+        """其他含 "KV cache size" 的行不应被误解析(需要 GPU/NPU 前缀)"""
+        kv, _ = kvt.parse_kv_results("KV cache size: 999 tokens")
+        assert kv is None
+
     def test_parse_no_match(self):
         kv, max_len = kvt.parse_kv_results("nothing here")
         assert kv is None
@@ -22,15 +37,18 @@ class TestParseKV:
 class TestCommands:
     def test_grep_host(self):
         cmd = kvt.build_grep_command("host", file_path="/var/log/vllm.log")
-        assert cmd == "grep -e 'GPU KV cache size' -e 'Maximum concurrency' /var/log/vllm.log"
+        assert cmd == ("grep -e 'GPU KV cache size' -e 'NPU KV cache size' "
+                       "-e 'Maximum concurrency' /var/log/vllm.log")
 
     def test_grep_container(self):
         cmd = kvt.build_grep_command("container", container="abc", file_path="/x/y.log")
-        assert cmd == "docker exec abc grep -e 'GPU KV cache size' -e 'Maximum concurrency' /x/y.log"
+        assert cmd == ("docker exec abc grep -e 'GPU KV cache size' "
+                       "-e 'NPU KV cache size' -e 'Maximum concurrency' /x/y.log")
 
     def test_grep_docker_logs(self):
         cmd = kvt.build_grep_command("docker_logs", container="abc")
-        assert cmd == "docker logs abc 2>&1 | grep -e 'GPU KV cache size' -e 'Maximum concurrency'"
+        assert cmd == ("docker logs abc 2>&1 | grep -e 'GPU KV cache size' "
+                       "-e 'NPU KV cache size' -e 'Maximum concurrency'")
 
     def test_grep_missing_selection(self):
         assert kvt.build_grep_command("docker_logs") is None

@@ -162,7 +162,7 @@ def list_remote_dir(path: str = "/",
 
 
 # ------------------------------------------------------------
-# 引擎参数自动获取: 从 vLLM 引擎日志筛选 GPU KV cache size /
+# 引擎参数自动获取: 从 vLLM 引擎日志筛选 GPU/NPU KV cache size /
 # Maximum concurrency, 用于测试用例设计的 KV cache 与最大请求长度
 # (方法迁移自桌面版 AISBench-Prefix-Tools 的日志工具, 三种日志来源)
 # ------------------------------------------------------------
@@ -269,7 +269,7 @@ def engine_grep(req: EngineGrepRequest,
     """在选定日志来源中筛选 vLLM KV cache 信息并解析
 
     返回 (单个DP组KV cache tokens, 模型最大上下文 tokens):
-      GPU KV cache size: 198,469 tokens
+      GPU KV cache size: 198,469 tokens   (NPU 生态为 NPU KV cache size)
       Maximum concurrency for 131,072 tokens per request: 3.84x
     """
     cmd = kvt.build_grep_command(req.mode, req.container, req.path)

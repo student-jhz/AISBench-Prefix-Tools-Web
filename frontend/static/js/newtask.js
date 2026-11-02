@@ -257,7 +257,7 @@ function initDesigner() {
 /* ============ 3 · 引擎参数自动获取(从 vLLM 日志) ============ */
 
 /**
- * 从 vLLM 引擎日志获取 GPU KV cache size / Maximum concurrency,
+ * 从 vLLM 引擎日志获取 GPU/NPU KV cache size / Maximum concurrency,
  * 填入「单个DP组KV cache」与「最大请求长度」。
  * 三种日志来源(与桌面版 AISBench-Prefix-Tools 的日志工具一致):
  *   host        宿主机日志文件(如 /root/vllm_serve.log)
@@ -471,7 +471,10 @@ function showEngineKvModal() {
     grepBtn, statusEl);
 
   // ---- 命令预览与复制(日志不在服务器上时, 用户可复制命令自行执行) ----
-  const GREP = "grep -e 'GPU KV cache size' -e 'Maximum concurrency'";
+  // GPU / NPU 两种前缀都匹配: NPU 生态日志为 "NPU KV cache size";
+  // 不用泛化的 'KV cache size' 以免误匹配其他含该字样的行
+  const GREP = "grep -e 'GPU KV cache size' -e 'NPU KV cache size' "
+    + "-e 'Maximum concurrency'";
   const GENERIC_CMD = `cat vllm_serve.log | ${GREP}`;
   const cmdText = el("span", { style: "flex:1" });
   const copyCmdBtn = el("button", {
@@ -489,13 +492,14 @@ function showEngineKvModal() {
   }, "(点击「筛选 KV cache」后显示结果)");
   const parsedEl = el("div", { class: "inline-msg", style: "margin-bottom:4px" });
   const mapHint = el("div", { class: "hint-text", style: "margin-bottom:8px" },
-    "GPU KV cache size → 单个DP组KV cache；Maximum concurrency → 最大请求长度");
+    "GPU/NPU KV cache size → 单个DP组KV cache；Maximum concurrency → 最大请求长度");
 
   // ---- 粘贴 grep 输出解析(命令在别处执行后的回填通道) ----
   const pasteInput = el("textarea", {
     rows: "3", style: "width:100%;font-family:var(--mono);font-size:12px",
     placeholder: "把在别处执行的 grep 输出粘贴到这里, 例如:\n"
       + "GPU KV cache size: 198,469 tokens\n"
+      + "(NPU 生态为 NPU KV cache size: ...)\n"
       + "Maximum concurrency for 131,072 tokens per request: 3.84x",
   });
   const parsePasteBtn = el("button", {
@@ -561,7 +565,7 @@ function showEngineKvModal() {
   /** 解析用户粘贴的 grep 输出(与后端 parse_kv_results 相同的正则) */
   function parsePastedOutput() {
     const text = pasteInput.value || "";
-    const kvMatch = text.match(/GPU KV cache size:?\s*([\d,]+)\s*tokens/);
+    const kvMatch = text.match(/(?:GPU|NPU) KV cache size:?\s*([\d,]+)\s*tokens/);
     const maxMatch = text.match(/Maximum concurrency for ([\d,]+) tokens per request/);
     const kv = kvMatch ? Number(kvMatch[1].replace(/,/g, "")) : null;
     const maxLen = maxMatch ? Number(maxMatch[1].replace(/,/g, "")) : null;

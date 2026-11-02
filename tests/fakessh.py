@@ -258,6 +258,7 @@ class FakeSSH:
         # ---- v3.0.2 引擎参数获取: vLLM KV cache grep(host/容器文件/docker logs) ----
         # 忠实模拟 grep: 从文件/容器日志中筛选含标记的行, 无匹配则 exit 1
         if "grep" in command and "GPU KV cache size" in command \
+                and "NPU KV cache size" in command \
                 and "Maximum concurrency" in command:
             if command.startswith("docker logs"):
                 # shlex.quote 仅对含特殊字符的名称加引号
@@ -278,6 +279,7 @@ class FakeSSH:
                     else content.decode("utf-8", errors="replace")
             lines = [l for l in source.splitlines()
                      if "GPU KV cache size" in l
+                     or "NPU KV cache size" in l
                      or "Maximum concurrency" in l]
             out = "\n".join(lines) + ("\n" if lines else "")
             return (0 if lines else 1), out, ""

@@ -67,6 +67,13 @@ INFO 10-30 12:00:02 Maximum concurrency for 131,072 tokens per request: 3.84x
 INFO 10-30 12:00:03 Model loading took 12.3 GB
 """
 
+SAMPLE_NPU_VLLM_LOG = """INFO 11-01 09:00:00 Automatically detected platform
+INFO 11-01 09:00:01 # NPU blocks: 900, # CPU blocks: 512
+INFO 11-01 09:00:02 NPU KV cache size: 111,111 tokens
+INFO 11-01 09:00:02 Maximum concurrency for 65,536 tokens per request: 2.00x
+INFO 11-01 09:00:03 Model loading took 8.0 GB
+"""
+
 
 def wait_task(c, task_id, headers=None, timeout=20):
     deadline = time.time() + timeout
@@ -430,6 +437,22 @@ class TestEngineParams:
         assert data["parsed"] is True
         assert "GPU KV cache size: 198,469 tokens" in data["output"]
         assert "Maximum concurrency" in data["command"]
+
+    def test_grep_npu_host_log(self, pclient):
+        """NPU 生态: "NPU KV cache size" 日志同样可筛选并解析"""
+        c, ssh, _ = pclient
+        headers = self._login(c)
+        ssh.files["/root/npu_vllm.log"] = SAMPLE_NPU_VLLM_LOG
+
+        r = c.post("/api/platform/engine/grep", headers=headers,
+                   json={"mode": "host", "path": "/root/npu_vllm.log"})
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["kv"] == 111111
+        assert data["max_len"] == 65536
+        assert data["parsed"] is True
+        assert "NPU KV cache size: 111,111 tokens" in data["output"]
+        assert "NPU KV cache size" in data["command"]
 
     def test_grep_container_file(self, pclient):
         c, ssh, _ = pclient

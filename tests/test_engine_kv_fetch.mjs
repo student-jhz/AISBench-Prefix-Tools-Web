@@ -51,7 +51,7 @@ const routes = {
     grepCalls.push(body);
     if (body.server === "other") {
       return {
-        command: `grep -e 'GPU KV cache size' -e 'Maximum concurrency' ${body.path || ""}`,
+        command: `grep -e 'GPU KV cache size' -e 'NPU KV cache size' -e 'Maximum concurrency' ${body.path || ""}`,
         code: 0,
         output: "GPU KV cache size: 222,222 tokens\n"
           + "Maximum concurrency for 65,536 tokens per request: 2.00x\n",
@@ -64,7 +64,7 @@ const routes = {
         error: "", kv: null, max_len: null, parsed: false };
     }
     return {
-      command: `grep -e 'GPU KV cache size' -e 'Maximum concurrency' ${body.path || ""}`,
+      command: `grep -e 'GPU KV cache size' -e 'NPU KV cache size' -e 'Maximum concurrency' ${body.path || ""}`,
       code: 0,
       output: "GPU KV cache size: 198,469 tokens\n"
         + "Maximum concurrency for 131,072 tokens per request: 3.84x\n",
@@ -143,7 +143,7 @@ await new Promise(r => setTimeout(r, 500));
 check("弹窗已打开", modalText().includes("从引擎日志获取"));
 check("默认宿主机文件模式", modalText().includes("宿主机日志文件"));
 check("映射提示显示",
-  modalText().includes("GPU KV cache size") && modalText().includes("Maximum concurrency"));
+  modalText().includes("GPU/NPU KV cache size") && modalText().includes("Maximum concurrency"));
 
 // 宿主机模式: 不显示容器选择, 显示路径
 const containerRowEl = () => [...$id("modalRoot").querySelectorAll("div")]
@@ -160,11 +160,13 @@ await new Promise(r => setTimeout(r, 500));
 check("筛选请求发送", grepCalls.length === 1 && grepCalls[0].mode === "host"
   && grepCalls[0].path === "/root/vllm_serve.log");
 check("解析值展示", modalText().includes("198,469") && modalText().includes("131,072"));
-check("命令展示", modalText().includes("grep -e 'GPU KV cache size'"));
+check("命令展示", modalText().includes("grep -e 'GPU KV cache size'")
+  && modalText().includes("-e 'NPU KV cache size'"));
 btnByText("复制命令").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
 await new Promise(r => setTimeout(r, 200));
 check("复制命令使用当前路径",
-  copiedText === "grep -e 'GPU KV cache size' -e 'Maximum concurrency' /root/vllm_serve.log");
+  copiedText === "grep -e 'GPU KV cache size' -e 'NPU KV cache size' "
+  + "-e 'Maximum concurrency' /root/vllm_serve.log");
 const fillBtn = btnByText("填入参数");
 check("填入按钮可用", fillBtn && fillBtn.disabled === false);
 
@@ -257,7 +259,8 @@ copiedText = "";
 btnByText("复制命令").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
 await new Promise(r => setTimeout(r, 200));
 check("复制命令使用其他服务器选择的路径",
-  copiedText === "grep -e 'GPU KV cache size' -e 'Maximum concurrency' /var/log/other.log");
+  copiedText === "grep -e 'GPU KV cache size' -e 'NPU KV cache size' "
+  + "-e 'Maximum concurrency' /var/log/other.log");
 
 const pasteInput = $id("modalRoot").querySelector("textarea");
 pasteInput.value = "no engine parameters here";
@@ -277,6 +280,21 @@ btnByText("填入参数").dispatchEvent(new window.MouseEvent("click", { bubbles
 await new Promise(r => setTimeout(r, 300));
 check("粘贴解析结果可回填", $id("kvCache").value === "333333"
   && $id("kvMaxLen").value === "131071");
+
+// ---- 6. NPU 生态: "NPU KV cache size" 粘贴输出同样可解析 ----
+$id("kvAutoFetchBtn").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+await new Promise(r => setTimeout(r, 500));
+const npuInput = $id("modalRoot").querySelector("textarea");
+npuInput.value = "NPU KV cache size: 444,444 tokens\n"
+  + "Maximum concurrency for 32,768 tokens per request: 1.50x\n";
+btnByText("解析粘贴的输出").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+await new Promise(r => setTimeout(r, 200));
+check("NPU 粘贴输出解析成功", modalText().includes("444,444")
+  && modalText().includes("32,768"));
+btnByText("填入参数").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+await new Promise(r => setTimeout(r, 300));
+check("NPU 解析结果可回填", $id("kvCache").value === "444444"
+  && $id("kvMaxLen").value === "32768");
 
 check("无运行时错误", errors.length === 0);
 if (errors.length) console.error("捕获错误:", errors);

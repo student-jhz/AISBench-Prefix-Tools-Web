@@ -13,7 +13,13 @@ from .ssh_manager import SSHManager
 
 
 # KV cache 查询命令 (与界面展示保持一致)
-KV_GREP_COMMAND = "cat vllm_serve.log | grep -e 'GPU KV cache size' -e 'Maximum concurrency'"
+# 同时匹配 GPU / NPU 两种前缀: NPU 生态(vLLM Ascend 等)打印
+# "NPU KV cache size"; 不用泛化的 'KV cache size' 是为了避免
+# 误匹配其他含该字样的日志行。
+KV_GREP_COMMAND = (
+    "cat vllm_serve.log | grep -e 'GPU KV cache size' "
+    "-e 'NPU KV cache size' -e 'Maximum concurrency'"
+)
 
 # 查看日志时加载文件尾部的最大字节数 / docker logs 行数
 VIEW_TAIL_BYTES = 2 * 1024 * 1024
@@ -89,7 +95,8 @@ def list_dir(ssh: SSHManager, mode: str, path: str,
 def build_grep_command(mode: str, container: str = None,
                        file_path: str = None) -> Optional[str]:
     """构造 KV cache 筛选命令"""
-    grep = "grep -e 'GPU KV cache size' -e 'Maximum concurrency'"
+    grep = ("grep -e 'GPU KV cache size' -e 'NPU KV cache size' "
+            "-e 'Maximum concurrency'")
     if mode == "docker_logs":
         if not container:
             return None
@@ -125,7 +132,7 @@ def parse_kv_results(text: str) -> Tuple[Optional[int], Optional[int]]:
     kv = None
     max_len = None
 
-    match = re.search(r"GPU KV cache size:?\s*([\d,]+)\s*tokens", text)
+    match = re.search(r"(?:GPU|NPU) KV cache size:?\s*([\d,]+)\s*tokens", text)
     if match:
         try:
             kv = int(match.group(1).replace(",", ""))
